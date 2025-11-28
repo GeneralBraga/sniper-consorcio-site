@@ -4,16 +4,82 @@ import pandas as pd
 import re
 import itertools
 from io import BytesIO
+from fpdf import FPDF
+from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import os
 
-st.set_page_config(page_title="Sniper de Consórcio", page_icon="🎯", layout="wide")
+# --- CONFIGURAÇÃO DA PÁGINA E MARCA ---
+# Cores da JBS Contempladas
+COLOR_PRIMARY = "#84754e"  # Ouro/Bronze
+COLOR_BG = "#ecece4"       # Bege Claro
+COLOR_TEXT = "#000000"     # Preto
 
-st.markdown("""
+st.set_page_config(page_title="JBS Contempladas | Sistema Sniper", page_icon="🏛️", layout="wide")
+
+# CSS PERSONALIZADO (BRANDING)
+st.markdown(f"""
 <style>
-    .stButton>button {width: 100%; background-color: #0e1117; color: white; border: 1px solid #363b42;}
-    .stButton>button:hover {border-color: #00ff00; color: #00ff00;}
+    /* Fundo da Aplicação */
+    .stApp {{
+        background-color: {COLOR_BG};
+    }}
+    
+    /* Botões */
+    .stButton>button {{
+        width: 100%;
+        background-color: {COLOR_PRIMARY};
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: bold;
+        padding: 0.5rem 1rem;
+        text-transform: uppercase;
+        transition: all 0.3s ease;
+    }}
+    .stButton>button:hover {{
+        background-color: #6b5e3d; /* Um tom mais escuro do ouro */
+        color: white;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }}
+    
+    /* Inputs */
+    .stTextInput>div>div>input, .stNumberInput>div>div>input {{
+        border: 1px solid {COLOR_PRIMARY};
+        border-radius: 5px;
+    }}
+    
+    /* Títulos e Textos */
+    h1, h2, h3 {{
+        color: {COLOR_PRIMARY} !important;
+        font-family: 'Helvetica', sans-serif;
+    }}
+    
+    /* Expander */
+    .streamlit-expanderHeader {{
+        background-color: white;
+        color: {COLOR_PRIMARY};
+        border-radius: 5px;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
+# --- CABEÇALHO COM LOGO ---
+col_logo, col_title = st.columns([1, 4])
+with col_logo:
+    # Tenta carregar a logo se existir, senão mostra texto
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=150)
+    else:
+        st.markdown(f"## JBS")
+with col_title:
+    st.markdown(f"# Sistema de Oportunidades")
+    st.markdown(f"**JBS Contempladas Consórcios** | Ferramenta Exclusiva")
+
+st.divider()
+
+# --- FUNÇÕES DE LÓGICA (MOTOR V24) ---
 def limpar_moeda(texto):
     if not texto: return 0.0
     texto = str(texto).lower().strip().replace('\xa0', '').replace('&nbsp;', '')
@@ -53,16 +119,16 @@ def extrair_dados_universal(texto_copiado):
         if match_cred: credito = limpar_moeda(match_cred.group(1))
         else:
             valores = re.findall(r'R\$\s?([\d\.,]+)', bloco)
-            vals_float = sorted([limpar_moeda(v) for v in valores], reverse=True)
-            if vals_float: credito = vals_float[0]
+            vals = sorted([limpar_moeda(v) for v in valores], reverse=True)
+            if vals: credito = vals[0]
 
         entrada = 0.0
         match_ent = re.search(r'(?:entrada|ágio|agio|quero|pago)[^\d\n]*?R\$\s?([\d\.,]+)', bloco_lower)
         if match_ent: entrada = limpar_moeda(match_ent.group(1))
         else:
             valores = re.findall(r'R\$\s?([\d\.,]+)', bloco)
-            vals_float = sorted([limpar_moeda(v) for v in valores], reverse=True)
-            if len(vals_float) > 1: entrada = vals_float[1]
+            vals = sorted([limpar_moeda(v) for v in valores], reverse=True)
+            if len(vals) > 1: entrada = vals[1]
 
         regex_parc = r'(\d+)\s*[xX]\s*R?\$\s?([\d\.,]+)'
         todas_parcelas = re.findall(regex_parc, bloco)
@@ -109,7 +175,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
         grupo.sort(key=lambda x: x['EntradaPct'])
         
         count = 0
-        max_ops = 2000000 
+        max_ops = 3000000 
         
         for r in range(1, 7):
             iterator = itertools.combinations(grupo, r)
@@ -119,7 +185,6 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     count += 1
                     if count > max_ops: break
                     
-                    # CÁLCULOS DENTRO DO TRY PARA EVITAR ERRO DE VARIÁVEL
                     soma_ent = sum(c['Entrada'] for c in combo)
                     if soma_ent > (max_ent * 1.05): continue
                     
@@ -133,14 +198,15 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     custo_real = (soma_custo / soma_cred) - 1
                     if custo_real > max_custo: continue
                     
-                    # SE PASSOU EM TUDO, CRIA AS VARIÁVEIS FINAIS AQUI
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: {c['Crédito']:,.0f}" for c in combo])
+                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: R$ {c['Crédito']:,.2f}" for c in combo])
                     
-                    status = "⚠️ ALTO"
-                    if custo_real <= 0.20: status = "💎 LUCRO"
-                    elif custo_real <= 0.40: status = "🔥 TOP"
-                    elif custo_real <= 0.55: status = "✅ OK"
+                    # === TERMÔMETRO JBS ===
+                    status = "⚠️ PADRÃO"
+                    if custo_real <= 0.20: status = "💎 OURO"
+                    elif custo_real <= 0.35: status = "🔥 IMPERDÍVEL"
+                    elif custo_real <= 0.45: status = "✨ EXCELENTE"
+                    elif custo_real <= 0.50: status = "✅ OPORTUNIDADE"
                     
                     combinacoes_validas.append({
                         'Admin': admin, 'Status': status, 'IDs': ids,
@@ -157,47 +223,153 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     progress_bar.empty()
     return pd.DataFrame(combinacoes_validas)
 
-# --- APP ---
-st.title("🎯 Sniper de Consórcio V23.1")
+# --- FUNÇÃO: GERAR PDF PREMIUM (PAISAGEM) ---
+class PDF(FPDF):
+    def header(self):
+        # Cor de fundo do cabeçalho (Ouro da JBS)
+        self.set_fill_color(132, 117, 78) # #84754e
+        self.rect(0, 0, 297, 25, 'F') # Largura A4 Paisagem
+        
+        self.set_font('Arial', 'B', 15)
+        self.set_text_color(255, 255, 255)
+        self.cell(0, 10, 'JBS CONTEMPLADAS - RELATÓRIO DE OPORTUNIDADES', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, 5, f'Gerado em: {datetime.now().strftime("%d/%m/%Y")}', 0, 1, 'C')
+        self.ln(10)
 
-with st.expander("📋 Passo 1: Colar Dados", expanded=True):
-    texto_site = st.text_area("Cole aqui (CTRL+A do site)", height=150)
-    if texto_site:
-        cotas_lidas = extrair_dados_universal(texto_site)
-        st.info(f"Leitura: {len(cotas_lidas)} cotas.")
-        with st.expander("🕵️‍♂️ Diagnóstico"):
-            if cotas_lidas: st.dataframe(pd.DataFrame(cotas_lidas)[['ID','Admin','Crédito','Entrada']])
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.set_text_color(128)
+        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
-st.subheader("⚙️ Filtros")
-col1, col2 = st.columns(2)
-with col1:
-    min_c = st.number_input("Crédito Mín", value=640000, step=10000)
-    max_c = st.number_input("Crédito Máx", value=710000, step=10000)
-with col2:
-    max_e = st.number_input("Entrada Máx", value=280000, step=5000)
-    max_p = st.number_input("Parcela Máx", value=4500, step=100)
-max_k = st.slider("Custo Máx (%)", 0.0, 1.0, 0.55, 0.01)
+def gerar_pdf_premium(df):
+    pdf = PDF(orientation='L', unit='mm', format='A4')
+    pdf.add_page()
+    pdf.set_font("Arial", size=10)
+    
+    # Cabeçalho da Tabela
+    pdf.set_fill_color(236, 236, 228) # Bege #ecece4
+    pdf.set_text_color(0)
+    pdf.set_font("Arial", 'B', 10)
+    
+    cols = [40, 40, 40, 40, 40, 30, 47] # Larguras
+    headers = ["Admin", "Status", "Crédito", "Entrada", "Parcela", "Custo %", "Detalhes (Resumo)"]
+    
+    for i, h in enumerate(headers):
+        pdf.cell(cols[i], 10, h, 1, 0, 'C', True)
+    pdf.ln()
+    
+    # Linhas
+    pdf.set_font("Arial", size=9)
+    for index, row in df.iterrows():
+        # Cores para o Status
+        pdf.set_text_color(0)
+        if "OURO" in row['Status']: pdf.set_text_color(0, 100, 0)
+        elif "IMPERDÍVEL" in row['Status']: pdf.set_text_color(200, 0, 0)
+        
+        pdf.cell(cols[0], 10, str(row['Admin']), 1, 0, 'C')
+        pdf.cell(cols[1], 10, str(row['Status']), 1, 0, 'C')
+        
+        pdf.set_text_color(0) # Volta para preto
+        pdf.cell(cols[2], 10, f"R$ {row['Crédito Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(cols[3], 10, f"R$ {row['Entrada Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(cols[4], 10, f"R$ {row['Parcela Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(cols[5], 10, f"{row['Custo Real (%)']*100:.2f}%", 1, 0, 'C')
+        
+        # Detalhes (Corta se for muito grande para caber na linha)
+        detalhe_curto = row['Detalhes'][:30] + "..." if len(row['Detalhes']) > 30 else row['Detalhes']
+        pdf.cell(cols[6], 10, detalhe_curto, 1, 1, 'L')
+        
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
-if st.button("🚀 Processar", type="primary"):
+# --- FUNÇÃO: GOOGLE SHEETS ---
+def exportar_para_google_sheets(df, nome_planilha="JBS_Oportunidades"):
+    # ATENÇÃO: Requer arquivo de credenciais 'secrets.toml' ou configuração no Streamlit Cloud
+    # Se não tiver configurado, retorna None
+    try:
+        if "gcp_service_account" not in st.secrets:
+            return None, "Configuração de API do Google não encontrada."
+            
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+        client = gspread.authorize(creds)
+        
+        # Cria ou abre a planilha
+        try:
+            sh = client.open(nome_planilha)
+        except:
+            sh = client.create(nome_planilha)
+            
+        worksheet = sh.get_worksheet(0)
+        worksheet.clear()
+        
+        # Prepara dados para GSheets (converte números para string com vírgula se necessário, ou float direto)
+        # O GSpread aceita DataFrames direto
+        set_with_dataframe(worksheet, df)
+        
+        # Retorna URL
+        return sh.url, "Sucesso"
+    except Exception as e:
+        return None, str(e)
+
+# --- INTERFACE PRINCIPAL ---
+
+with st.expander("📋 COLE OS DADOS AQUI", expanded=True):
+    texto_site = st.text_area("Dados do Site:", height=100)
+
+st.subheader("Filtros JBS")
+c1, c2, c3 = st.columns(3)
+min_c = c1.number_input("Crédito Mín", 640000, step=10000)
+max_c = c1.number_input("Crédito Máx", 710000, step=10000)
+max_e = c2.number_input("Entrada Máx", 280000, step=5000)
+max_p = c2.number_input("Parcela Máx", 4500, step=100)
+max_k = c3.slider("Custo Máx (%)", 0.0, 1.0, 0.55, 0.01)
+
+if st.button("🔍 LOCALIZAR OPORTUNIDADES", type="primary"):
     if texto_site:
         cotas = extrair_dados_universal(texto_site)
         if len(cotas) > 0:
             df = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
             if not df.empty:
-                st.success(f"{len(df)} combinações!")
+                df_show = df.sort_values(by='Custo Real (%)')
+                st.success(f"{len(df_show)} Oportunidades Encontradas!")
+                
+                # Mostra na tela
                 st.dataframe(
-                    df.sort_values(by='Custo Real (%)'),
+                    df_show,
                     column_config={
                         "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
                         "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
                         "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
                     }, hide_index=True
                 )
-                buf = BytesIO()
-                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
-                st.download_button("📥 Excel", buf.getvalue(), "sniper.xlsx")
+                
+                col_pdf, col_sheet = st.columns(2)
+                
+                # 1. BOTÃO PDF (Funciona sempre)
+                pdf_bytes = gerar_pdf_premium(df_show)
+                col_pdf.download_button(
+                    label="📄 Baixar PDF Premium (Paisagem)",
+                    data=pdf_bytes,
+                    file_name="JBS_Oportunidades.pdf",
+                    mime="application/pdf"
+                )
+                
+                # 2. BOTÃO GOOGLE SHEETS (Requer Configuração)
+                if col_sheet.button("googlesheets Gerar Link Google Sheets"):
+                    url, msg = exportar_para_google_sheets(df_show)
+                    if url:
+                        col_sheet.success(f"Planilha Criada! [Clique aqui]({url})")
+                    else:
+                        col_sheet.warning(f"Não foi possível gerar o link automático (Requer API Key). Use o PDF ou Excel.")
+                        # Fallback Excel
+                        buf = BytesIO()
+                        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                            df_show.to_excel(writer, index=False)
+                        col_sheet.download_button("📥 Baixar Excel (Alternativa)", buf.getvalue(), "JBS.xlsx")
             else:
-                st.warning("Sem combinações. Relaxe os filtros.")
+                st.warning("Nenhuma oportunidade no perfil.")
     else:
         st.error("Cole os dados.")
