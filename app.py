@@ -86,7 +86,6 @@ def limpar_moeda(texto):
 def extrair_dados_universal(texto_copiado):
     lista_cotas = []
     texto_limpo = "\n".join([line.strip() for line in texto_copiado.split('\n') if line.strip()])
-    # Regex expandida para pegar também Automóvel, Caminhão, Moto, etc.
     blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo|caminhão|moto)', texto_limpo)
     if len(blocos) < 2: blocos = texto_limpo.split('\n\n')
 
@@ -104,12 +103,11 @@ def extrair_dados_universal(texto_copiado):
         
         if admin_encontrada == "OUTROS" and "r$" not in bloco_lower: continue
 
-        # Identificação do Tipo (Aprimorada)
         tipo_cota = "Geral"
         if "imóvel" in bloco_lower or "imovel" in bloco_lower: tipo_cota = "Imóvel"
         elif "automóvel" in bloco_lower or "automovel" in bloco_lower or "veículo" in bloco_lower or "carro" in bloco_lower: tipo_cota = "Automóvel"
         elif "caminhão" in bloco_lower or "pesado" in bloco_lower: tipo_cota = "Pesados"
-        elif "moto" in bloco_lower: tipo_cota = "Automóvel" # Moto entra como auto geralmente
+        elif "moto" in bloco_lower: tipo_cota = "Automóvel"
 
         credito = 0.0
         match_cred = re.search(r'(?:crédito|credito|bem|valor)[^\d\n]*?R\$\s?([\d\.,]+)', bloco_lower)
@@ -156,12 +154,8 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     combinacoes_validas = []
     cotas_por_admin = {}
     
-    # AGORA FILTRA O TIPO ANTES DE AGRUPAR
     for cota in cotas:
-        # Se filtro não for TODOS e o tipo for diferente, pula
-        if tipo_filtro != "Todos" and cota['Tipo'] != tipo_filtro:
-            continue
-            
+        if tipo_filtro != "Todos" and cota['Tipo'] != tipo_filtro: continue
         adm = cota['Admin']
         if adm not in cotas_por_admin: cotas_por_admin[adm] = []
         cotas_por_admin[adm].append(cota)
@@ -170,8 +164,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     total_admins = len(cotas_por_admin)
     current = 0
 
-    if total_admins == 0:
-        return pd.DataFrame()
+    if total_admins == 0: return pd.DataFrame()
 
     for admin, grupo in cotas_por_admin.items():
         if admin == "OUTROS": continue
@@ -197,12 +190,16 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     soma_parc = sum(c['Parcela'] for c in combo)
                     if soma_parc > (max_parc * 1.05): continue
                     soma_custo = sum(c['CustoTotal'] for c in combo)
+                    
+                    # Cálculo Saldo Devedor
+                    soma_saldo = sum(c['Saldo'] for c in combo)
+
                     custo_real = (soma_custo / soma_cred) - 1
                     if custo_real > max_custo: continue
                     
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] {c['Tipo']} Cr: R$ {c['Crédito']:,.0f}" for c in combo])
-                    tipo_final = combo[0]['Tipo'] # Pega o tipo da primeira cota (já que são iguais)
+                    detalhes = " || ".join([f"[ID {c['ID']}] {c['Tipo']} Cr: {c['Crédito']:,.0f}" for c in combo])
+                    tipo_final = combo[0]['Tipo']
                     
                     status = "⚠️ PADRÃO"
                     if custo_real <= 0.20: status = "💎 OURO"
@@ -213,6 +210,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     combinacoes_validas.append({
                         'Admin': admin, 'Status': status, 'Tipo': tipo_final, 'IDs': ids,
                         'Crédito Total': soma_cred, 'Entrada Total': soma_ent,
+                        'Saldo Devedor': soma_saldo, # Nova Coluna
                         'Parcela Total': soma_parc, 
                         'Custo Real (%)': custo_real * 100, 
                         'Detalhes': detalhes
@@ -242,27 +240,30 @@ def limpar_emojis(texto):
 def gerar_pdf_final(df):
     pdf = PDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
-    pdf.set_font("Arial", size=9)
+    pdf.set_font("Arial", size=8) # Fonte levemente menor para caber tudo
     pdf.set_fill_color(236, 236, 228)
     pdf.set_text_color(0)
-    pdf.set_font("Arial", 'B', 9)
-    # Adicionei a coluna TIPO no PDF
-    headers = ["Admin", "Tipo", "Status", "Credito", "Entrada", "Parcela", "Custo", "Detalhes"]
-    w = [25, 20, 30, 35, 35, 30, 15, 85]
+    pdf.set_font("Arial", 'B', 8)
+    
+    # Adicionei "Saldo" no cabeçalho PDF
+    headers = ["Admin", "Status", "Credito", "Entrada", "Saldo Dev.", "Parcela", "Custo", "Detalhes"]
+    w = [25, 30, 30, 30, 30, 25, 15, 90] 
+    
     for i, h in enumerate(headers): pdf.cell(w[i], 10, h, 1, 0, 'C', True)
     pdf.ln()
-    pdf.set_font("Arial", size=8)
+    pdf.set_font("Arial", size=7)
+    
     for index, row in df.iterrows():
         status_clean = limpar_emojis(row['Status'])
         pdf.cell(w[0], 8, limpar_emojis(str(row['Admin'])), 1, 0, 'C')
-        pdf.cell(w[1], 8, limpar_emojis(str(row['Tipo'])), 1, 0, 'C') # Nova coluna Tipo
-        pdf.cell(w[2], 8, status_clean, 1, 0, 'C')
-        pdf.cell(w[3], 8, f"R$ {row['Crédito Total']:,.2f}", 1, 0, 'R')
-        pdf.cell(w[4], 8, f"R$ {row['Entrada Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(w[1], 8, status_clean, 1, 0, 'C')
+        pdf.cell(w[2], 8, f"R$ {row['Crédito Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(w[3], 8, f"R$ {row['Entrada Total']:,.2f}", 1, 0, 'R')
+        pdf.cell(w[4], 8, f"R$ {row['Saldo Devedor']:,.2f}", 1, 0, 'R') # Saldo no PDF
         pdf.cell(w[5], 8, f"R$ {row['Parcela Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[6], 8, f"{row['Custo Real (%)']:.2f}%", 1, 0, 'C')
         detalhe = limpar_emojis(row['Detalhes'])
-        pdf.cell(w[7], 8, detalhe[:50], 1, 1, 'L')
+        pdf.cell(w[7], 8, detalhe[:65], 1, 1, 'L')
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- APP ---
@@ -272,8 +273,6 @@ with st.expander("📋 DADOS DO SITE (Colar aqui)", expanded=True):
     texto_site = st.text_area("", height=100, key="input_texto")
 
 st.subheader("Filtros JBS")
-
-# FILTRO DE TIPO (Dropdown)
 tipo_bem = st.selectbox("Tipo de Bem", ["Todos", "Imóvel", "Automóvel", "Pesados"])
 
 c1, c2 = st.columns(2)
@@ -287,7 +286,6 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
     if texto_site:
         cotas = extrair_dados_universal(texto_site)
         if cotas:
-            # Passa o tipo_bem para a função de processamento
             st.session_state.df_resultado = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k, tipo_bem)
         else:
             st.error("Nenhuma cota lida.")
@@ -305,6 +303,7 @@ if st.session_state.df_resultado is not None:
             column_config={
                 "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Saldo Devedor": st.column_config.NumberColumn(format="R$ %.2f"), # Nova Coluna
                 "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
                 "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
             }, hide_index=True
@@ -326,8 +325,8 @@ if st.session_state.df_resultado is not None:
             ws = writer.sheets['JBS']
             fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
             fmt_perc = wb.add_format({'num_format': '0.00%'})
-            ws.set_column('D:F', 18, fmt_money) # Ajuste de colunas (D=Cred, E=Entr, F=Parc)
-            ws.set_column('G:G', 12, fmt_perc)  # G=Custo
+            ws.set_column('C:G', 18, fmt_money) # Crédito, Entrada, Saldo, Parcela
+            ws.set_column('H:H', 12, fmt_perc)
             ws.set_column('A:C', 15)
         c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS_Calculo.xlsx")
     else:
