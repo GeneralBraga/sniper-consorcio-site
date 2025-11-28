@@ -8,8 +8,7 @@ from fpdf import FPDF
 from datetime import datetime
 import os
 
-# --- CONFIGURAÇÃO INICIAL (ÍCONE E TÍTULO) ---
-# Usa a logo SÓLIDA para o ícone da aba do navegador
+# --- CONFIGURAÇÃO INICIAL ---
 favicon_path = "logo_pdf.png" if os.path.exists("logo_pdf.png") else "🏛️"
 
 st.set_page_config(
@@ -49,7 +48,6 @@ st.markdown(f"""
         color: white; 
         border: 1px solid {COLOR_GOLD};
     }}
-    /* Ajuste da Tabela e Expander */
     div[data-testid="stDataFrame"], .streamlit-expanderHeader {{
         border: 1px solid {COLOR_GOLD};
         background-color: #1c1f26;
@@ -57,7 +55,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CABEÇALHO DO APP (Usa logo transparente) ---
+# --- CABEÇALHO ---
 c1, c2 = st.columns([1, 5])
 with c1:
     if os.path.exists("logo_app.png"):
@@ -70,7 +68,7 @@ with c2:
 
 st.markdown(f"<hr style='border: 1px solid {COLOR_GOLD}; margin-top: 0;'>", unsafe_allow_html=True)
 
-# --- FUNÇÕES LÓGICAS ---
+# --- FUNÇÕES ---
 def limpar_moeda(texto):
     if not texto: return 0.0
     texto = str(texto).lower().strip().replace('\xa0', '').replace('&nbsp;', '')
@@ -88,7 +86,8 @@ def limpar_moeda(texto):
 def extrair_dados_universal(texto_copiado):
     lista_cotas = []
     texto_limpo = "\n".join([line.strip() for line in texto_copiado.split('\n') if line.strip()])
-    blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo)', texto_limpo)
+    # Regex expandida para pegar também Automóvel, Caminhão, Moto, etc.
+    blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo|caminhão|moto)', texto_limpo)
     if len(blocos) < 2: blocos = texto_limpo.split('\n\n')
 
     id_cota = 1
@@ -104,6 +103,12 @@ def extrair_dados_universal(texto_copiado):
                 break
         
         if admin_encontrada == "OUTROS" and "r$" not in bloco_lower: continue
+
+        # Identificação do Tipo
+        tipo_cota = "Geral"
+        if "imóvel" in bloco_lower or "imovel" in bloco_lower: tipo_cota = "Imóvel"
+        elif "automóvel" in bloco_lower or "veículo" in bloco_lower or "carro" in bloco_lower: tipo_cota = "Automóvel"
+        elif "caminhão" in bloco_lower: tipo_cota = "Pesados"
 
         credito = 0.0
         match_cred = re.search(r'(?:crédito|credito|bem|valor)[^\d\n]*?R\$\s?([\d\.,]+)', bloco_lower)
@@ -138,7 +143,8 @@ def extrair_dados_universal(texto_copiado):
             custo_total = entrada + saldo_devedor
             if credito > 5000: 
                 lista_cotas.append({
-                    'ID': id_cota, 'Admin': admin_encontrada, 'Crédito': credito, 'Entrada': entrada,
+                    'ID': id_cota, 'Admin': admin_encontrada, 'Tipo': tipo_cota,
+                    'Crédito': credito, 'Entrada': entrada,
                     'Parcela': parcela_teto, 'Saldo': saldo_devedor, 'CustoTotal': custo_total,
                     'EntradaPct': (entrada/credito) if credito else 0
                 })
@@ -164,7 +170,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
         grupo.sort(key=lambda x: x['EntradaPct'])
         
         count = 0
-        max_ops = 2000000 
+        max_ops = 3000000 
         
         for r in range(1, 7):
             iterator = itertools.combinations(grupo, r)
@@ -185,7 +191,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     if custo_real > max_custo: continue
                     
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: R$ {c['Crédito']:,.0f}" for c in combo])
+                    detalhes = " || ".join([f"[ID {c['ID']}] {c['Tipo']} Cr: R$ {c['Crédito']:,.0f}" for c in combo])
                     
                     status = "⚠️ PADRÃO"
                     if custo_real <= 0.20: status = "💎 OURO"
@@ -197,28 +203,22 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                         'Admin': admin, 'Status': status, 'IDs': ids,
                         'Crédito Total': soma_cred, 'Entrada Total': soma_ent,
                         'Parcela Total': soma_parc, 
-                        'Custo Real (%)': custo_real * 100, # MULTIPLICADO POR 100
+                        'Custo Real (%)': custo_real * 100, 
                         'Detalhes': detalhes
                     })
-                    
                     if len([x for x in combinacoes_validas if x['Admin'] == admin]) > 150: break
                 except StopIteration: break
             if count > max_ops: break
     progress_bar.empty()
     return pd.DataFrame(combinacoes_validas)
 
-# --- PDF CUSTOMIZADO (Usa logo SÓLIDA) ---
+# --- PDF ---
 class PDF(FPDF):
     def header(self):
-        # Fundo Dourado
         self.set_fill_color(132, 117, 78)
         self.rect(0, 0, 297, 22, 'F')
-        
-        # Logo Sólida (Ajuste fino de posição x=5, y=3)
         if os.path.exists("logo_pdf.png"):
             self.image('logo_pdf.png', 5, 3, 35)
-
-        # Título Centralizado
         self.set_font('Arial', 'B', 16)
         self.set_text_color(255, 255, 255)
         self.set_xy(45, 6) 
@@ -232,51 +232,39 @@ def gerar_pdf_final(df):
     pdf = PDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     pdf.set_font("Arial", size=9)
-    
-    # Cabeçalho da Tabela
-    pdf.set_fill_color(236, 236, 228) # Bege
+    pdf.set_fill_color(236, 236, 228)
     pdf.set_text_color(0)
     pdf.set_font("Arial", 'B', 9)
-    
     headers = ["Admin", "Status", "Credito", "Entrada", "Parcela", "Custo", "Detalhes"]
     w = [30, 35, 35, 35, 30, 20, 90]
-    
-    for i, h in enumerate(headers):
-        pdf.cell(w[i], 10, h, 1, 0, 'C', True)
+    for i, h in enumerate(headers): pdf.cell(w[i], 10, h, 1, 0, 'C', True)
     pdf.ln()
-    
-    # Linhas
     pdf.set_font("Arial", size=8)
     for index, row in df.iterrows():
         status_clean = limpar_emojis(row['Status'])
-        
         pdf.cell(w[0], 8, limpar_emojis(str(row['Admin'])), 1, 0, 'C')
         pdf.cell(w[1], 8, status_clean, 1, 0, 'C')
         pdf.cell(w[2], 8, f"R$ {row['Crédito Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[3], 8, f"R$ {row['Entrada Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[4], 8, f"R$ {row['Parcela Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[5], 8, f"{row['Custo Real (%)']:.2f}%", 1, 0, 'C')
-        
         detalhe = limpar_emojis(row['Detalhes'])
         pdf.cell(w[6], 8, detalhe[:55], 1, 1, 'L')
-        
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- INTERFACE PRINCIPAL ---
-
-# Session State
-if 'df_resultado' not in st.session_state:
-    st.session_state.df_resultado = None
+# --- APP ---
+if 'df_resultado' not in st.session_state: st.session_state.df_resultado = None
 
 with st.expander("📋 DADOS DO SITE (Colar aqui)", expanded=True):
     texto_site = st.text_area("", height=100, key="input_texto")
 
 st.subheader("Filtros JBS")
 c1, c2 = st.columns(2)
-min_c = c1.number_input("Crédito Mín (R$)", 640000.0, step=10000.0, format="%.2f")
-max_c = c1.number_input("Crédito Máx (R$)", 710000.0, step=10000.0, format="%.2f")
-max_e = c2.number_input("Entrada Máx (R$)", 280000.0, step=5000.0, format="%.2f")
-max_p = c2.number_input("Parcela Máx (R$)", 4500.0, step=100.0, format="%.2f")
+# --- INPUTS DESBLOQUEADOS (0.0 até infinito) ---
+min_c = c1.number_input("Crédito Mín (R$)", 0.0, step=1000.0, value=640000.0, format="%.2f")
+max_c = c1.number_input("Crédito Máx (R$)", 0.0, step=1000.0, value=710000.0, format="%.2f")
+max_e = c2.number_input("Entrada Máx (R$)", 0.0, step=1000.0, value=280000.0, format="%.2f")
+max_p = c2.number_input("Parcela Máx (R$)", 0.0, step=100.0, value=4500.0, format="%.2f")
 max_k = st.slider("Custo Máx (%)", 0.0, 1.0, 0.55, 0.01)
 
 if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
@@ -285,55 +273,42 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
         if cotas:
             st.session_state.df_resultado = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
         else:
-            st.error("Nenhuma cota identificada.")
+            st.error("Nenhuma cota lida.")
     else:
-        st.error("Cole os dados primeiro.")
+        st.error("Cole os dados.")
 
-# EXIBIÇÃO DE RESULTADOS
 if st.session_state.df_resultado is not None:
     df_show = st.session_state.df_resultado
-    
     if not df_show.empty:
         df_show = df_show.sort_values(by='Custo Real (%)')
         st.success(f"{len(df_show)} Oportunidades Encontradas!")
         
-        st.dataframe(
-            df_show,
-            column_config={
-                "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
-            }, hide_index=True
-        )
+        st.dataframe(df_show, column_config={
+            "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
+            "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
+            "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
+            "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
+        }, hide_index=True)
         
         c_pdf, c_xls = st.columns(2)
         
-        # PDF
         try:
             pdf_bytes = gerar_pdf_final(df_show)
-            c_pdf.download_button("📄 Baixar PDF (Relatório)", pdf_bytes, "JBS_Sniper_Relatorio.pdf", "application/pdf")
-        except Exception as e:
-            c_pdf.error(f"Erro no PDF: {e}")
+            c_pdf.download_button("📄 Baixar PDF", pdf_bytes, "JBS_Relatorio.pdf", "application/pdf")
+        except: c_pdf.error("Erro PDF")
 
-        # EXCEL
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df_excel = df_show.copy()
-            df_excel['Custo Real (%)'] = df_excel['Custo Real (%)'] / 100
-            
-            df_excel.to_excel(writer, index=False, sheet_name='JBS')
+            df_ex = df_show.copy()
+            df_ex['Custo Real (%)'] = df_ex['Custo Real (%)'] / 100
+            df_ex.to_excel(writer, index=False, sheet_name='JBS')
             wb = writer.book
             ws = writer.sheets['JBS']
-            
             fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
             fmt_perc = wb.add_format({'num_format': '0.00%'})
-            
             ws.set_column('C:E', 18, fmt_money)
             ws.set_column('F:F', 12, fmt_perc)
             ws.set_column('G:G', 50)
-            
-        c_xls.download_button("📊 Baixar Excel (Cálculo)", buf.getvalue(), "JBS_Sniper_Calculo.xlsx")
-        
+        c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS_Calculo.xlsx")
     else:
         st.warning("Nenhuma oportunidade com estes filtros.")
