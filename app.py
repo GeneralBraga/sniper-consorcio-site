@@ -7,35 +7,23 @@ from io import BytesIO
 
 st.set_page_config(page_title="Sniper de Consórcio", page_icon="🎯", layout="wide")
 
-# --- CSS ---
 st.markdown("""
 <style>
-    .stButton>button {
-        width: 100%;
-        background-color: #0e1117;
-        color: white;
-        border: 1px solid #363b42;
-    }
-    .stButton>button:hover {
-        border-color: #00ff00;
-        color: #00ff00;
-    }
+    .stButton>button {width: 100%; background-color: #0e1117; color: white; border: 1px solid #363b42;}
+    .stButton>button:hover {border-color: #00ff00; color: #00ff00;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNÇÕES ---
 def limpar_moeda(texto):
     if not texto: return 0.0
-    texto = str(texto).lower().strip()
-    texto = texto.replace('\xa0', '').replace('&nbsp;', '')
+    texto = str(texto).lower().strip().replace('\xa0', '').replace('&nbsp;', '')
     texto = re.sub(r'[^\d\.,]', '', texto)
     if not texto: return 0.0
     try:
         if ',' in texto and '.' in texto: return float(texto.replace('.', '').replace(',', '.'))
         elif ',' in texto: return float(texto.replace(',', '.'))
         elif '.' in texto:
-             partes = texto.split('.')
-             if len(partes[-1]) == 2: return float(texto)
+             if len(texto.split('.')[1]) == 2: return float(texto)
              return float(texto.replace('.', ''))
         return float(texto)
     except: return 0.0
@@ -43,8 +31,6 @@ def limpar_moeda(texto):
 def extrair_dados_universal(texto_copiado):
     lista_cotas = []
     texto_limpo = "\n".join([line.strip() for line in texto_copiado.split('\n') if line.strip()])
-    
-    # Tenta quebrar por palavras-chave de admin ou blocos
     blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo)', texto_limpo)
     if len(blocos) < 2: blocos = texto_limpo.split('\n\n')
 
@@ -53,10 +39,9 @@ def extrair_dados_universal(texto_copiado):
         if len(bloco) < 20: continue
         bloco_lower = bloco.lower()
         
-        admins_conhecidas = ['BRADESCO', 'SANTANDER', 'ITAÚ', 'ITAU', 'PORTO', 'CAIXA', 'BANCO DO BRASIL', 'BB', 'RODOBENS', 'EMBRACON', 'ANCORA', 'ÂNCORA', 'MYCON', 'SICREDI', 'SICOOB', 'MAPFRE', 'HS', 'YAMAHA', 'ZEMA', 'BANCORBRÁS', 'BANCORBRAS', 'SERVOPA']
+        admins = ['BRADESCO', 'SANTANDER', 'ITAÚ', 'ITAU', 'PORTO', 'CAIXA', 'BANCO DO BRASIL', 'BB', 'RODOBENS', 'EMBRACON', 'ANCORA', 'ÂNCORA', 'MYCON', 'SICREDI', 'SICOOB', 'MAPFRE', 'HS', 'YAMAHA', 'ZEMA', 'BANCORBRÁS', 'BANCORBRAS', 'SERVOPA']
         admin_encontrada = "OUTROS"
-        
-        for adm in admins_conhecidas:
+        for adm in admins:
             if adm.lower() in bloco_lower:
                 admin_encontrada = adm.upper()
                 break
@@ -79,14 +64,14 @@ def extrair_dados_universal(texto_copiado):
             vals_float = sorted([limpar_moeda(v) for v in valores], reverse=True)
             if len(vals_float) > 1: entrada = vals_float[1]
 
-        regex_parcelas = r'(\d+)\s*[xX]\s*R?\$\s?([\d\.,]+)'
-        todas_parcelas = re.findall(regex_parcelas, bloco)
+        regex_parc = r'(\d+)\s*[xX]\s*R?\$\s?([\d\.,]+)'
+        todas_parcelas = re.findall(regex_parc, bloco)
         
         saldo_devedor = 0.0
         parcela_teto = 0.0
-        for prazo_str, valor_str in todas_parcelas:
-            pz = int(prazo_str)
-            vlr = limpar_moeda(valor_str)
+        for pz_str, vlr_str in todas_parcelas:
+            pz = int(pz_str)
+            vlr = limpar_moeda(vlr_str)
             saldo_devedor += (pz * vlr)
             if pz > 1 and vlr > parcela_teto: parcela_teto = vlr
             elif len(todas_parcelas) == 1: parcela_teto = vlr
@@ -96,13 +81,8 @@ def extrair_dados_universal(texto_copiado):
             custo_total = entrada + saldo_devedor
             if credito > 5000: 
                 lista_cotas.append({
-                    'ID': id_cota,
-                    'Admin': admin_encontrada,
-                    'Crédito': credito,
-                    'Entrada': entrada,
-                    'Parcela': parcela_teto,
-                    'Saldo': saldo_devedor,
-                    'CustoTotal': custo_total,
+                    'ID': id_cota, 'Admin': admin_encontrada, 'Crédito': credito, 'Entrada': entrada,
+                    'Parcela': parcela_teto, 'Saldo': saldo_devedor, 'CustoTotal': custo_total,
                     'EntradaPct': (entrada/credito) if credito else 0
                 })
                 id_cota += 1
@@ -118,15 +98,18 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     
     progress_bar = st.progress(0)
     total_admins = len(cotas_por_admin)
-    current_admin = 0
+    current = 0
 
     for admin, grupo in cotas_por_admin.items():
-        current_admin += 1
-        progress_bar.progress(int((current_admin / total_admins) * 100))
+        if admin == "OUTROS": continue
+        current += 1
+        progress_bar.progress(int((current / total_admins) * 100))
+        
+        if sum(c['Crédito'] for c in grupo) < min_cred: continue
         grupo.sort(key=lambda x: x['EntradaPct'])
         
         count = 0
-        max_ops = 3000000 
+        max_ops = 2000000 
         
         for r in range(1, 7):
             iterator = itertools.combinations(grupo, r)
@@ -136,6 +119,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     count += 1
                     if count > max_ops: break
                     
+                    # CÁLCULOS DENTRO DO TRY PARA EVITAR ERRO DE VARIÁVEL
                     soma_ent = sum(c['Entrada'] for c in combo)
                     if soma_ent > (max_ent * 1.05): continue
                     
@@ -149,8 +133,9 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     custo_real = (soma_custo / soma_cred) - 1
                     if custo_real > max_custo: continue
                     
+                    # SE PASSOU EM TUDO, CRIA AS VARIÁVEIS FINAIS AQUI
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: {c['Crédito']:,.0f} Ent: {c['Entrada']:,.0f}" for c in combo])
+                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: {c['Crédito']:,.0f}" for c in combo])
                     
                     status = "⚠️ ALTO"
                     if custo_real <= 0.20: status = "💎 LUCRO"
@@ -158,17 +143,13 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     elif custo_real <= 0.55: status = "✅ OK"
                     
                     combinacoes_validas.append({
-                        'Admin': admin,
-                        'Status': status,
-                        'IDs': ids,
-                        'Crédito Total': soma_credito,
-                        'Entrada Total': soma_entrada,
-                        'Parcela Total': soma_parcela,
-                        'Custo Real (%)': custo_real,
+                        'Admin': admin, 'Status': status, 'IDs': ids,
+                        'Crédito Total': soma_cred, 'Entrada Total': soma_ent,
+                        'Parcela Total': soma_parc, 'Custo Real (%)': custo_real,
                         'Detalhes': detalhes
                     })
                     
-                    if len([x for x in combinacoes_validas if x['Admin'] == admin]) > 200: break
+                    if len([x for x in combinacoes_validas if x['Admin'] == admin]) > 150: break
                 except StopIteration:
                     break
             if count > max_ops: break
@@ -177,17 +158,15 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     return pd.DataFrame(combinacoes_validas)
 
 # --- APP ---
-st.title("🎯 Sniper Mobile V23")
+st.title("🎯 Sniper de Consórcio V23.1")
 
-with st.expander("📋 Passo 1: Colar Dados do Site", expanded=True):
+with st.expander("📋 Passo 1: Colar Dados", expanded=True):
     texto_site = st.text_area("Cole aqui (CTRL+A do site)", height=150)
-    
     if texto_site:
         cotas_lidas = extrair_dados_universal(texto_site)
-        st.info(f"Leitura: {len(cotas_lidas)} cotas identificadas.")
-        with st.expander("🕵️‍♂️ Ver o que o robô leu (Diagnóstico)"):
+        st.info(f"Leitura: {len(cotas_lidas)} cotas.")
+        with st.expander("🕵️‍♂️ Diagnóstico"):
             if cotas_lidas: st.dataframe(pd.DataFrame(cotas_lidas)[['ID','Admin','Crédito','Entrada']])
-            else: st.error("Nada lido. Verifique a cópia.")
 
 st.subheader("⚙️ Filtros")
 col1, col2 = st.columns(2)
@@ -206,13 +185,19 @@ if st.button("🚀 Processar", type="primary"):
             df = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
             if not df.empty:
                 st.success(f"{len(df)} combinações!")
-                st.dataframe(df.sort_values(by='Custo Real (%)'), hide_index=True)
-                
+                st.dataframe(
+                    df.sort_values(by='Custo Real (%)'),
+                    column_config={
+                        "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
+                    }, hide_index=True
+                )
                 buf = BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False)
                 st.download_button("📥 Excel", buf.getvalue(), "sniper.xlsx")
             else:
-                st.warning("Sem combinações para estes filtros.")
+                st.warning("Sem combinações. Relaxe os filtros.")
     else:
-        st.error("Cole os dados primeiro.")
+        st.error("Cole os dados.")
