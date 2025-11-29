@@ -106,7 +106,7 @@ def extrair_dados_universal(texto_copiado, tipo_selecionado):
         tipo_cota = "Geral"
         if "imóvel" in bloco_lower or "imovel" in bloco_lower: tipo_cota = "Imóvel"
         elif "automóvel" in bloco_lower or "veículo" in bloco_lower or "carro" in bloco_lower: tipo_cota = "Automóvel"
-        elif "caminhão" in bloco_lower: tipo_cota = "Pesados"
+        elif "caminhão" in bloco_lower or "pesado" in bloco_lower: tipo_cota = "Pesados"
         elif "moto" in bloco_lower: tipo_cota = "Automóvel"
         
         if tipo_cota == "Geral":
@@ -198,23 +198,25 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     if soma_cred < min_cred or soma_cred > max_cred: continue
                     soma_parc = sum(c['Parcela'] for c in combo)
                     if soma_parc > (max_parc * 1.05): continue
-                    soma_custo = sum(c['CustoTotal'] for c in combo)
+                    
                     soma_saldo = sum(c['Saldo'] for c in combo)
                     
+                    # CUSTO TOTAL (Entrada + Saldo)
                     custo_total_exibicao = soma_ent + soma_saldo
                     
-                    prazo_medio = 0
-                    if soma_parc > 0:
-                        prazo_medio = int(soma_saldo / soma_parc)
-
                     custo_real = (custo_total_exibicao / soma_cred) - 1
                     if custo_real > max_custo: continue
                     
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: R$ {c['Crédito']:,.0f}" for c in combo])
+                    
+                    # FORMATAÇÃO VISUAL NOS DETALHES (CAIXA ALTA + SIMBOLO)
+                    detalhes = " || ".join([f"[ID {c['ID']}] 💰 CR: R$ {c['Crédito']:,.0f}" for c in combo])
+                    
                     tipo_final = combo[0]['Tipo']
                     
-                    # TERMÔMETRO V36
+                    prazo_medio = 0
+                    if soma_parc > 0: prazo_medio = int(soma_saldo / soma_parc)
+
                     status = "⚠️ PADRÃO"
                     if custo_real <= 0.20: status = "💎 OURO"
                     elif custo_real <= 0.35: status = "🔥 IMPERDÍVEL"
@@ -230,14 +232,14 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                         'IDS': ids,
                         'CRÉDITO TOTAL': soma_cred,
                         'ENTRADA TOTAL': soma_ent,
-                        'ENTRADA %': entrada_pct * 100, # Para exibir 20%
+                        'ENTRADA %': entrada_pct * 100,
                         'SALDO DEVEDOR': soma_saldo,
+                        'CUSTO TOTAL': custo_total_exibicao, # NOVA COLUNA ORDENADA
                         'PRAZO': prazo_medio,
                         'PARCELAS': soma_parc,
                         'CUSTO EFETIVO %': custo_real * 100,
                         'DETALHES': detalhes
                     })
-                    
                     if len([x for x in combinacoes_validas if x['ADMINISTRADORA'] == admin]) > 500: break
                 except StopIteration: break
             if count > max_ops: break
@@ -268,9 +270,9 @@ def gerar_pdf_final(df):
     pdf.set_text_color(0)
     pdf.set_font("Arial", 'B', 7)
     
-    # Colunas Atualizadas V36
-    headers = ["STATUS", "ADMIN", "TIPO", "CREDITO", "ENTRADA", "ENT%", "SALDO", "PRZ", "PARCELA", "CUSTO%", "DETALHES"]
-    w = [22, 20, 15, 26, 26, 12, 26, 8, 20, 12, 85]
+    # Cabeçalho com Custo Total
+    headers = ["STS", "ADM", "CREDITO", "ENTRADA", "SALDO", "CUSTO TOT", "PRZ", "PARCELA", "EFET%", "DETALHES"]
+    w = [20, 20, 25, 25, 25, 25, 8, 20, 10, 95] 
     
     for i, h in enumerate(headers): pdf.cell(w[i], 8, h, 1, 0, 'C', True)
     pdf.ln()
@@ -280,17 +282,16 @@ def gerar_pdf_final(df):
         status_clean = limpar_emojis(row['STATUS'])
         pdf.cell(w[0], 8, status_clean, 1, 0, 'C')
         pdf.cell(w[1], 8, limpar_emojis(str(row['ADMINISTRADORA'])), 1, 0, 'C')
-        pdf.cell(w[2], 8, limpar_emojis(str(row['TIPO'])), 1, 0, 'C')
-        pdf.cell(w[3], 8, f"R$ {row['CRÉDITO TOTAL']:,.0f}", 1, 0, 'R')
-        pdf.cell(w[4], 8, f"R$ {row['ENTRADA TOTAL']:,.0f}", 1, 0, 'R')
-        pdf.cell(w[5], 8, f"{row['ENTRADA %']:.1f}%", 1, 0, 'C')
-        pdf.cell(w[6], 8, f"R$ {row['SALDO DEVEDOR']:,.0f}", 1, 0, 'R')
-        pdf.cell(w[7], 8, str(row['PRAZO']), 1, 0, 'C')
-        pdf.cell(w[8], 8, f"R$ {row['PARCELAS']:,.0f}", 1, 0, 'R')
-        pdf.cell(w[9], 8, f"{row['CUSTO EFETIVO %']:.1f}%", 1, 0, 'C')
+        pdf.cell(w[2], 8, f"{row['CRÉDITO TOTAL']:,.0f}", 1, 0, 'R')
+        pdf.cell(w[3], 8, f"{row['ENTRADA TOTAL']:,.0f}", 1, 0, 'R')
+        pdf.cell(w[4], 8, f"{row['SALDO DEVEDOR']:,.0f}", 1, 0, 'R')
+        pdf.cell(w[5], 8, f"{row['CUSTO TOTAL']:,.0f}", 1, 0, 'R')
+        pdf.cell(w[6], 8, str(row['PRAZO']), 1, 0, 'C')
+        pdf.cell(w[7], 8, f"{row['PARCELAS']:,.0f}", 1, 0, 'R')
+        pdf.cell(w[8], 8, f"{row['CUSTO EFETIVO %']:.1f}%", 1, 0, 'C')
         
         detalhe = limpar_emojis(row['DETALHES'])
-        pdf.cell(w[10], 8, detalhe[:65], 1, 1, 'L')
+        pdf.cell(w[9], 8, detalhe[:70], 1, 1, 'L')
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- APP ---
@@ -333,7 +334,6 @@ if st.session_state.df_resultado is not None:
         df_show = df_show.sort_values(by='CUSTO EFETIVO %')
         st.success(f"{len(df_show)} Oportunidades Encontradas!")
         
-        # Colunas Formatadas na Tela
         st.dataframe(
             df_show,
             column_config={
@@ -341,6 +341,7 @@ if st.session_state.df_resultado is not None:
                 "ENTRADA TOTAL": st.column_config.NumberColumn(format="R$ %.2f"),
                 "ENTRADA %": st.column_config.NumberColumn(format="%.2f %%"),
                 "SALDO DEVEDOR": st.column_config.NumberColumn(format="R$ %.2f"),
+                "CUSTO TOTAL": st.column_config.NumberColumn(format="R$ %.2f"), # Nova
                 "PARCELAS": st.column_config.NumberColumn(format="R$ %.2f"),
                 "CUSTO EFETIVO %": st.column_config.NumberColumn(format="%.2f %%"),
             }, hide_index=True
@@ -354,7 +355,6 @@ if st.session_state.df_resultado is not None:
 
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            # Para o Excel, precisamos dos valores numéricos para cálculo, mas vamos formatar
             df_ex = df_show.copy()
             df_ex['ENTRADA %'] = df_ex['ENTRADA %'] / 100
             df_ex['CUSTO EFETIVO %'] = df_ex['CUSTO EFETIVO %'] / 100
@@ -363,23 +363,22 @@ if st.session_state.df_resultado is not None:
             wb = writer.book
             ws = writer.sheets['JBS']
             
-            # Formatos
+            # Negrito no Cabeçalho
             header_fmt = wb.add_format({'bold': True, 'bg_color': '#ecece4', 'border': 1})
             fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
             fmt_perc = wb.add_format({'num_format': '0.00%'})
             
-            # Aplica Cabeçalho
             for col_num, value in enumerate(df_ex.columns.values):
                 ws.write(0, col_num, value, header_fmt)
             
-            # Aplica Colunas
-            # A=Status, B=Admin, C=Tipo, D=IDs, E=Cred, F=Ent, G=Ent%, H=Saldo, I=Prz, J=Parc, K=Custo%, L=Det
-            ws.set_column('E:F', 18, fmt_money) # Cred/Ent
-            ws.set_column('G:G', 12, fmt_perc)  # Ent%
+            ws.set_column('E:F', 18, fmt_money) 
+            ws.set_column('G:G', 12, fmt_perc)  
             ws.set_column('H:H', 18, fmt_money) # Saldo
-            ws.set_column('J:J', 15, fmt_money) # Parc
-            ws.set_column('K:K', 12, fmt_perc)  # Custo%
-            ws.set_column('L:L', 60)            # Detalhes
+            ws.set_column('I:I', 18, fmt_money) # Custo Total
+            ws.set_column('K:K', 15, fmt_money) # Parcela
+            ws.set_column('L:L', 12, fmt_perc)  # Custo %
+            ws.set_column('M:M', 70)            # Detalhes
+            ws.set_column('A:D', 15)
             
         c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS_Calculo.xlsx")
     else:
