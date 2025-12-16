@@ -3,74 +3,42 @@ import streamlit as st
 import pandas as pd
 import re
 import itertools
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from io import BytesIO
 from fpdf import FPDF
 from datetime import datetime
 import os
-
-# --- CONFIGURAÇÃO INICIAL (ÍCONE E TÍTULO) ---
-# Usa a logo SÓLIDA para o ícone da aba do navegador
-favicon_path = "logo_pdf.png" if os.path.exists("logo_pdf.png") else "🏛️"
-
-st.set_page_config(
-    page_title="JBS SNIPER",
-    page_icon=favicon_path,
-    layout="wide"
-)
 
 # --- CORES DA MARCA ---
 COLOR_GOLD = "#84754e"
 COLOR_BEIGE = "#ecece4"
 COLOR_BG = "#0e1117"
 
-# --- CSS PERSONALIZADO ---
+st.set_page_config(page_title="JBS Sniper | Sistema Premium", page_icon="🏛️", layout="wide")
+
+# CSS PERSONALIZADO
 st.markdown(f"""
 <style>
     .stApp {{background-color: {COLOR_BG}; color: {COLOR_BEIGE};}}
-    .stButton>button {{
-        width: 100%; 
-        background-color: {COLOR_GOLD}; 
-        color: white; 
-        border: none; 
-        border-radius: 6px; 
-        font-weight: bold; 
-        text-transform: uppercase;
-        padding: 12px;
-        letter-spacing: 1px;
-    }}
-    .stButton>button:hover {{
-        background-color: #6b5e3d; 
-        color: {COLOR_BEIGE};
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    }}
+    .stButton>button {{width: 100%; background-color: {COLOR_GOLD}; color: white; border-radius: 6px; font-weight: bold;}}
+    .stButton>button:hover {{background-color: #6b5e3d; color: {COLOR_BEIGE}; border: 1px solid {COLOR_BEIGE};}}
     h1, h2, h3 {{color: {COLOR_GOLD} !important; font-family: 'Helvetica', sans-serif;}}
-    .stTextInput>div>div>input, .stNumberInput>div>div>input {{
-        background-color: #1c1f26; 
-        color: white; 
-        border: 1px solid {COLOR_GOLD};
-    }}
-    /* Ajuste da Tabela e Expander */
-    div[data-testid="stDataFrame"], .streamlit-expanderHeader {{
-        border: 1px solid {COLOR_GOLD};
-        background-color: #1c1f26;
-    }}
+    .stTextInput>div>div>input, .stNumberInput>div>div>input {{background-color: #1c1f26; color: white; border: 1px solid {COLOR_GOLD};}}
 </style>
 """, unsafe_allow_html=True)
 
-# --- CABEÇALHO DO APP (Usa logo transparente) ---
+# --- CABEÇALHO ---
 c1, c2 = st.columns([1, 5])
 with c1:
-    if os.path.exists("logo_app.png"):
-        st.image("logo_app.png", width=220)
-    else:
-        st.markdown(f"<h1 style='color:{COLOR_GOLD}'>JBS</h1>", unsafe_allow_html=True)
+    if os.path.exists("logo.png"): st.image("logo.png", width=120)
+    else: st.markdown(f"<h2 style='color:{COLOR_GOLD}'>JBS</h2>", unsafe_allow_html=True)
 with c2:
-    st.markdown(f"<h1 style='margin-top: 15px; margin-bottom: 0px;'>SISTEMA SNIPER</h1>", unsafe_allow_html=True)
-    st.markdown(f"<h3 style='margin-top: 0px; color: {COLOR_BEIGE} !important;'>Ferramenta Exclusiva da JBS Contempladas</h3>", unsafe_allow_html=True)
+    st.markdown(f"# SISTEMA SNIPER V27")
+    st.markdown(f"**JBS Contempladas** | Inteligência Comercial")
+st.markdown(f"<hr style='border: 1px solid {COLOR_GOLD}'>", unsafe_allow_html=True)
 
-st.markdown(f"<hr style='border: 1px solid {COLOR_GOLD}; margin-top: 0;'>", unsafe_allow_html=True)
-
-# --- FUNÇÕES LÓGICAS ---
+# --- FUNÇÕES ---
 def limpar_moeda(texto):
     if not texto: return 0.0
     texto = str(texto).lower().strip().replace('\xa0', '').replace('&nbsp;', '')
@@ -207,72 +175,76 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     progress_bar.empty()
     return pd.DataFrame(combinacoes_validas)
 
-# --- PDF CUSTOMIZADO (Usa logo SÓLIDA) ---
+# --- FUNÇÃO GOOGLE SHEETS (REAL) ---
+def criar_planilha_google(df):
+    try:
+        # Tenta pegar as credenciais dos "Secrets" do Streamlit
+        # O usuário precisa configurar isso no painel do Streamlit Cloud
+        if "gcp_service_account" not in st.secrets:
+            return None, "⚠️ Configure as chaves de API do Google no Streamlit Cloud."
+
+        # Conecta
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # Cria Planilha
+        nome_arquivo = f"JBS_Oportunidades_{datetime.now().strftime('%d-%m-%H-%M')}"
+        sh = client.create(nome_arquivo)
+        
+        # Compartilha com quem criou (opcional, mas bom pra garantir acesso)
+        # sh.share('seu_email@jbs.com.br', perm_type='user', role='writer') 
+        
+        worksheet = sh.get_worksheet(0)
+        
+        # Upload dos dados (converte tudo para string para evitar erros de JSON)
+        df_str = df.astype(str)
+        worksheet.update([df_str.columns.values.tolist()] + df_str.values.tolist())
+        
+        return sh.url, "Sucesso"
+    except Exception as e:
+        return None, f"Erro na API: {str(e)}"
+
+# --- PDF FIX ---
 class PDF(FPDF):
     def header(self):
-        # Fundo Dourado
         self.set_fill_color(132, 117, 78)
-        self.rect(0, 0, 297, 22, 'F')
-        
-        # Logo Sólida (Ajuste fino de posição x=5, y=3)
-        if os.path.exists("logo_pdf.png"):
-            self.image('logo_pdf.png', 5, 3, 35)
-
-        # Título Centralizado
-        self.set_font('Arial', 'B', 16)
+        self.rect(0, 0, 297, 20, 'F')
+        self.set_font('Arial', 'B', 14)
         self.set_text_color(255, 255, 255)
-        self.set_xy(45, 6) 
-        self.cell(0, 10, 'RELATÓRIO SNIPER DE OPORTUNIDADES', 0, 1, 'L')
-        self.ln(8)
+        self.cell(0, 10, 'JBS CONTEMPLADAS', 0, 1, 'C')
+        self.ln(5)
 
-def limpar_emojis(texto):
-    return texto.encode('latin-1', 'ignore').decode('latin-1').replace("?", "").strip()
-
-def gerar_pdf_final(df):
+def gerar_pdf_simples(df):
     pdf = PDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     pdf.set_font("Arial", size=9)
-    
-    # Cabeçalho da Tabela
-    pdf.set_fill_color(236, 236, 228) # Bege
+    pdf.set_fill_color(220, 220, 220)
     pdf.set_text_color(0)
-    pdf.set_font("Arial", 'B', 9)
-    
-    headers = ["Admin", "Status", "Credito", "Entrada", "Parcela", "Custo", "Detalhes"]
-    w = [30, 35, 35, 35, 30, 20, 90]
-    
-    for i, h in enumerate(headers):
-        pdf.cell(w[i], 10, h, 1, 0, 'C', True)
+    headers = ["Admin", "Status", "Credito", "Entrada", "Parcela", "Custo %", "Detalhes"]
+    w = [35, 35, 35, 35, 35, 20, 80]
+    for i, h in enumerate(headers): pdf.cell(w[i], 8, h, 1, 0, 'C', True)
     pdf.ln()
-    
-    # Linhas
-    pdf.set_font("Arial", size=8)
     for index, row in df.iterrows():
-        status_clean = limpar_emojis(row['Status'])
-        
-        pdf.cell(w[0], 8, limpar_emojis(str(row['Admin'])), 1, 0, 'C')
-        pdf.cell(w[1], 8, status_clean, 1, 0, 'C')
+        detalhe = str(row['Detalhes']).encode('latin-1', 'ignore').decode('latin-1')
+        status = str(row['Status']).encode('latin-1', 'ignore').decode('latin-1')
+        pdf.cell(w[0], 8, str(row['Admin']), 1, 0, 'C')
+        pdf.cell(w[1], 8, status, 1, 0, 'C')
         pdf.cell(w[2], 8, f"R$ {row['Crédito Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[3], 8, f"R$ {row['Entrada Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[4], 8, f"R$ {row['Parcela Total']:,.2f}", 1, 0, 'R')
         pdf.cell(w[5], 8, f"{row['Custo Real (%)']:.2f}%", 1, 0, 'C')
-        
-        detalhe = limpar_emojis(row['Detalhes'])
-        pdf.cell(w[6], 8, detalhe[:55], 1, 1, 'L')
-        
+        pdf.cell(w[6], 8, detalhe[:45], 1, 1, 'L')
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- INTERFACE PRINCIPAL ---
-
-# Session State
-if 'df_resultado' not in st.session_state:
-    st.session_state.df_resultado = None
-
+# --- UI ---
 with st.expander("📋 DADOS DO SITE (Colar aqui)", expanded=True):
-    texto_site = st.text_area("", height=100, key="input_texto")
+    texto_site = st.text_area("", height=100)
 
 st.subheader("Filtros JBS")
 c1, c2 = st.columns(2)
+# FORMATAÇÃO DO INPUT (Visual apenas, o valor é float)
 min_c = c1.number_input("Crédito Mín (R$)", 640000.0, step=10000.0, format="%.2f")
 max_c = c1.number_input("Crédito Máx (R$)", 710000.0, step=10000.0, format="%.2f")
 max_e = c2.number_input("Entrada Máx (R$)", 280000.0, step=5000.0, format="%.2f")
@@ -283,57 +255,41 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
     if texto_site:
         cotas = extrair_dados_universal(texto_site)
         if cotas:
-            st.session_state.df_resultado = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
-        else:
-            st.error("Nenhuma cota identificada.")
+            df = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
+            if not df.empty:
+                df = df.sort_values(by='Custo Real (%)')
+                st.success(f"{len(df)} Oportunidades Encontradas!")
+                
+                st.dataframe(
+                    df,
+                    column_config={
+                        "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
+                    }, hide_index=True
+                )
+                
+                c_pdf, c_xls, c_goog = st.columns(3)
+                
+                # PDF
+                try:
+                    pdf_data = gerar_pdf_simples(df)
+                    c_pdf.download_button("📄 Baixar PDF", pdf_data, "JBS.pdf", "application/pdf")
+                except: c_pdf.error("Erro PDF")
+
+                # Excel
+                buf = BytesIO()
+                with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False)
+                c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS.xlsx")
+                
+                # Google Sheets (Botão Condicional)
+                if c_goog.button("🌐 Gerar Link Google Sheets"):
+                    url, msg = criar_planilha_google(df)
+                    if url: st.success(f"Link Criado: [Abrir Planilha]({url})")
+                    else: st.error(f"Erro: {msg}")
+            else:
+                st.warning("Nenhuma oportunidade encontrada.")
     else:
         st.error("Cole os dados primeiro.")
-
-# EXIBIÇÃO DE RESULTADOS
-if st.session_state.df_resultado is not None:
-    df_show = st.session_state.df_resultado
-    
-    if not df_show.empty:
-        df_show = df_show.sort_values(by='Custo Real (%)')
-        st.success(f"{len(df_show)} Oportunidades Encontradas!")
-        
-        st.dataframe(
-            df_show,
-            column_config={
-                "Crédito Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Entrada Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Parcela Total": st.column_config.NumberColumn(format="R$ %.2f"),
-                "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
-            }, hide_index=True
-        )
-        
-        c_pdf, c_xls = st.columns(2)
-        
-        # PDF
-        try:
-            pdf_bytes = gerar_pdf_final(df_show)
-            c_pdf.download_button("📄 Baixar PDF (Relatório)", pdf_bytes, "JBS_Sniper_Relatorio.pdf", "application/pdf")
-        except Exception as e:
-            c_pdf.error(f"Erro no PDF: {e}")
-
-        # EXCEL
-        buf = BytesIO()
-        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-            df_excel = df_show.copy()
-            df_excel['Custo Real (%)'] = df_excel['Custo Real (%)'] / 100
-            
-            df_excel.to_excel(writer, index=False, sheet_name='JBS')
-            wb = writer.book
-            ws = writer.sheets['JBS']
-            
-            fmt_money = wb.add_format({'num_format': 'R$ #,##0.00'})
-            fmt_perc = wb.add_format({'num_format': '0.00%'})
-            
-            ws.set_column('C:E', 18, fmt_money)
-            ws.set_column('F:F', 12, fmt_perc)
-            ws.set_column('G:G', 50)
-            
-        c_xls.download_button("📊 Baixar Excel (Cálculo)", buf.getvalue(), "JBS_Sniper_Calculo.xlsx")
-        
-    else:
-        st.warning("Nenhuma oportunidade com estes filtros.")
