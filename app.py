@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import re
@@ -104,7 +103,8 @@ def extrair_dados_universal(texto_copiado):
         if credito > 0 and entrada > 0:
             if saldo_devedor == 0: saldo_devedor = (credito * 1.3) - entrada
             custo_total = entrada + saldo_devedor
-            if credito > 5000: 
+            # AJUSTE AQUI: Liberando créditos a partir de 1000 reais
+            if credito >= 1000: 
                 lista_cotas.append({
                     'ID': id_cota, 'Admin': admin_encontrada, 'Crédito': credito, 'Entrada': entrada,
                     'Parcela': parcela_teto, 'Saldo': saldo_devedor, 'CustoTotal': custo_total,
@@ -165,7 +165,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                         'Admin': admin, 'Status': status, 'IDs': ids,
                         'Crédito Total': soma_cred, 'Entrada Total': soma_ent,
                         'Parcela Total': soma_parc, 
-                        'Custo Real (%)': custo_real * 100, # MULTIPLICADO POR 100
+                        'Custo Real (%)': custo_real * 100,
                         'Detalhes': detalhes
                     })
                     
@@ -175,33 +175,20 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
     progress_bar.empty()
     return pd.DataFrame(combinacoes_validas)
 
-# --- FUNÇÃO GOOGLE SHEETS (REAL) ---
+# --- FUNÇÃO GOOGLE SHEETS ---
 def criar_planilha_google(df):
     try:
-        # Tenta pegar as credenciais dos "Secrets" do Streamlit
-        # O usuário precisa configurar isso no painel do Streamlit Cloud
         if "gcp_service_account" not in st.secrets:
             return None, "⚠️ Configure as chaves de API do Google no Streamlit Cloud."
-
-        # Conecta
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
-        # Cria Planilha
         nome_arquivo = f"JBS_Oportunidades_{datetime.now().strftime('%d-%m-%H-%M')}"
         sh = client.create(nome_arquivo)
-        
-        # Compartilha com quem criou (opcional, mas bom pra garantir acesso)
-        # sh.share('seu_email@jbs.com.br', perm_type='user', role='writer') 
-        
         worksheet = sh.get_worksheet(0)
-        
-        # Upload dos dados (converte tudo para string para evitar erros de JSON)
         df_str = df.astype(str)
         worksheet.update([df_str.columns.values.tolist()] + df_str.values.tolist())
-        
         return sh.url, "Sucesso"
     except Exception as e:
         return None, f"Erro na API: {str(e)}"
@@ -244,9 +231,9 @@ with st.expander("📋 DADOS DO SITE (Colar aqui)", expanded=True):
 
 st.subheader("Filtros JBS")
 c1, c2 = st.columns(2)
-# FORMATAÇÃO DO INPUT (Visual apenas, o valor é float)
-min_c = c1.number_input("Crédito Mín (R$)", 640000.0, step=10000.0, format="%.2f")
-max_c = c1.number_input("Crédito Máx (R$)", 710000.0, step=10000.0, format="%.2f")
+# AJUSTE AQUI: Alterado valor padrão e mínimo para 1000.00
+min_c = c1.number_input("Crédito Mín (R$)", min_value=1000.0, value=1000.0, step=1000.0, format="%.2f")
+max_c = c1.number_input("Crédito Máx (R$)", min_value=1000.0, value=710000.0, step=10000.0, format="%.2f")
 max_e = c2.number_input("Entrada Máx (R$)", 280000.0, step=5000.0, format="%.2f")
 max_p = c2.number_input("Parcela Máx (R$)", 4500.0, step=100.0, format="%.2f")
 max_k = st.slider("Custo Máx (%)", 0.0, 1.0, 0.55, 0.01)
@@ -259,7 +246,6 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
             if not df.empty:
                 df = df.sort_values(by='Custo Real (%)')
                 st.success(f"{len(df)} Oportunidades Encontradas!")
-                
                 st.dataframe(
                     df,
                     column_config={
@@ -269,22 +255,15 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
                         "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
                     }, hide_index=True
                 )
-                
                 c_pdf, c_xls, c_goog = st.columns(3)
-                
-                # PDF
                 try:
                     pdf_data = gerar_pdf_simples(df)
                     c_pdf.download_button("📄 Baixar PDF", pdf_data, "JBS.pdf", "application/pdf")
                 except: c_pdf.error("Erro PDF")
-
-                # Excel
                 buf = BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False)
                 c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS.xlsx")
-                
-                # Google Sheets (Botão Condicional)
                 if c_goog.button("🌐 Gerar Link Google Sheets"):
                     url, msg = criar_planilha_google(df)
                     if url: st.success(f"Link Criado: [Abrir Planilha]({url})")
