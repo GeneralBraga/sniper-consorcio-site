@@ -9,14 +9,15 @@ from fpdf import FPDF
 from datetime import datetime
 import os
 
+# --- CONFIGURAÇÃO INICIAL ---
+st.set_page_config(page_title="JBS Sniper | Sistema Premium", page_icon="🏛️", layout="wide")
+
 # --- CORES DA MARCA ---
 COLOR_GOLD = "#84754e"
 COLOR_BEIGE = "#ecece4"
 COLOR_BG = "#0e1117"
 
-st.set_page_config(page_title="JBS Sniper | Sistema Premium", page_icon="🏛️", layout="wide")
-
-# CSS PERSONALIZADO
+# --- CSS PERSONALIZADO ---
 st.markdown(f"""
 <style>
     .stApp {{background-color: {COLOR_BG}; color: {COLOR_BEIGE};}}
@@ -24,6 +25,10 @@ st.markdown(f"""
     .stButton>button:hover {{background-color: #6b5e3d; color: {COLOR_BEIGE}; border: 1px solid {COLOR_BEIGE};}}
     h1, h2, h3 {{color: {COLOR_GOLD} !important; font-family: 'Helvetica', sans-serif;}}
     .stTextInput>div>div>input, .stNumberInput>div>div>input {{background-color: #1c1f26; color: white; border: 1px solid {COLOR_GOLD};}}
+    /* Ajuste para telas menores */
+    @media (max-width: 768px) {{
+        .stButton>button {{font-size: 14px;}}
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,7 +52,7 @@ def limpar_moeda(texto):
         if ',' in texto and '.' in texto: return float(texto.replace('.', '').replace(',', '.'))
         elif ',' in texto: return float(texto.replace(',', '.'))
         elif '.' in texto:
-             if len(texto.split('.')[1]) == 2: return float(texto)
+             if len(texto.split('.')[1]) == 2: return float(texto) 
              return float(texto.replace('.', ''))
         return float(texto)
     except: return 0.0
@@ -55,15 +60,15 @@ def limpar_moeda(texto):
 def extrair_dados_universal(texto_copiado):
     lista_cotas = []
     texto_limpo = "\n".join([line.strip() for line in texto_copiado.split('\n') if line.strip()])
-    blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo)', texto_limpo)
+    blocos = re.split(r'(?i)(?=imóvel|imovel|automóvel|automovel|veículo|caminhão|moto)', texto_limpo)
     if len(blocos) < 2: blocos = texto_limpo.split('\n\n')
 
     id_cota = 1
     for bloco in blocos:
-        if len(bloco) < 20: continue
+        if len(bloco) < 20: continue 
         bloco_lower = bloco.lower()
         
-        admins = ['BRADESCO', 'SANTANDER', 'ITAÚ', 'ITAU', 'PORTO', 'CAIXA', 'BANCO DO BRASIL', 'BB', 'RODOBENS', 'EMBRACON', 'ANCORA', 'ÂNCORA', 'MYCON', 'SICREDI', 'SICOOB', 'MAPFRE', 'HS', 'YAMAHA', 'ZEMA', 'BANCORBRÁS', 'BANCORBRAS', 'SERVOPA']
+        admins = ['BRADESCO', 'SANTANDER', 'ITAÚ', 'ITAU', 'PORTO', 'CAIXA', 'BANCO DO BRASIL', 'BB', 'RODOBENS', 'EMBRACON', 'ANCORA', 'ÂNCORA', 'MYCON', 'SICREDI', 'SICOOB', 'MAPFRE', 'HS', 'YAMAHA', 'ZEMA', 'BANCORBRÁS', 'BANCORBRAS', 'SERVOPA', 'ADLER']
         admin_encontrada = "OUTROS"
         for adm in admins:
             if adm.lower() in bloco_lower:
@@ -73,7 +78,7 @@ def extrair_dados_universal(texto_copiado):
         if admin_encontrada == "OUTROS" and "r$" not in bloco_lower: continue
 
         credito = 0.0
-        match_cred = re.search(r'(?:crédito|credito|bem|valor)[^\d\n]*?R\$\s?([\d\.,]+)', bloco_lower)
+        match_cred = re.search(r'(?:crédito|credito|bem|valor|carta)[^\d\n]*?R\$\s?([\d\.,]+)', bloco_lower)
         if match_cred: credito = limpar_moeda(match_cred.group(1))
         else:
             valores = re.findall(r'R\$\s?([\d\.,]+)', bloco)
@@ -100,11 +105,14 @@ def extrair_dados_universal(texto_copiado):
             if pz > 1 and vlr > parcela_teto: parcela_teto = vlr
             elif len(todas_parcelas) == 1: parcela_teto = vlr
 
-        if credito > 0 and entrada > 0:
-            if saldo_devedor == 0: saldo_devedor = (credito * 1.3) - entrada
+        if credito > 0:
+            if saldo_devedor == 0 and entrada > 0: 
+                saldo_devedor = (credito * 1.3) - entrada
+            
             custo_total = entrada + saldo_devedor
-            # AJUSTE AQUI: Liberando créditos a partir de 1000 reais
-            if credito >= 1000: 
+            
+            # ACEITA TUDO ACIMA DE ZERO
+            if credito >= 1.0: 
                 lista_cotas.append({
                     'ID': id_cota, 'Admin': admin_encontrada, 'Crédito': credito, 'Entrada': entrada,
                     'Parcela': parcela_teto, 'Saldo': saldo_devedor, 'CustoTotal': custo_total,
@@ -116,6 +124,7 @@ def extrair_dados_universal(texto_copiado):
 def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_custo):
     combinacoes_validas = []
     cotas_por_admin = {}
+    
     for cota in cotas:
         adm = cota['Admin']
         if adm not in cotas_por_admin: cotas_por_admin[adm] = []
@@ -143,17 +152,22 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                     if count > max_ops: break
                     
                     soma_ent = sum(c['Entrada'] for c in combo)
-                    if soma_ent > (max_ent * 1.05): continue
+                    if max_ent > 0 and soma_ent > (max_ent * 1.05): continue 
+                    
                     soma_cred = sum(c['Crédito'] for c in combo)
-                    if soma_cred < min_cred or soma_cred > max_cred: continue
+                    if soma_cred < min_cred: continue
+                    if max_cred > 0 and soma_cred > max_cred: continue
+                    
                     soma_parc = sum(c['Parcela'] for c in combo)
-                    if soma_parc > (max_parc * 1.05): continue
+                    if max_parc > 0 and soma_parc > (max_parc * 1.05): continue
+                    
                     soma_custo = sum(c['CustoTotal'] for c in combo)
-                    custo_real = (soma_custo / soma_cred) - 1
-                    if custo_real > max_custo: continue
+                    custo_real = (soma_custo / soma_cred) - 1 if soma_cred > 0 else 0
+                    
+                    if max_custo > 0 and custo_real > max_custo: continue
                     
                     ids = " + ".join([str(c['ID']) for c in combo])
-                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: R$ {c['Crédito']:,.0f}" for c in combo])
+                    detalhes = " || ".join([f"[ID {c['ID']}] Cr: {c['Crédito']:,.0f}" for c in combo])
                     
                     status = "⚠️ PADRÃO"
                     if custo_real <= 0.20: status = "💎 OURO"
@@ -193,10 +207,10 @@ def criar_planilha_google(df):
     except Exception as e:
         return None, f"Erro na API: {str(e)}"
 
-# --- PDF FIX ---
+# --- PDF GENERATOR ---
 class PDF(FPDF):
     def header(self):
-        self.set_fill_color(132, 117, 78)
+        self.set_fill_color(132, 117, 78) # Cor Gold
         self.rect(0, 0, 297, 20, 'F')
         self.set_font('Arial', 'B', 14)
         self.set_text_color(255, 255, 255)
@@ -225,27 +239,36 @@ def gerar_pdf_simples(df):
         pdf.cell(w[6], 8, detalhe[:45], 1, 1, 'L')
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- UI ---
+# --- UI (INTERFACE) ---
 with st.expander("📋 DADOS DO SITE (Colar aqui)", expanded=True):
-    texto_site = st.text_area("", height=100)
+    texto_site = st.text_area("", height=100, placeholder="Cole aqui a lista de cartas...")
 
 st.subheader("Filtros JBS")
 c1, c2 = st.columns(2)
-# AJUSTE AQUI: Alterado valor padrão e mínimo para 1000.00
-min_c = c1.number_input("Crédito Mín (R$)", min_value=1000.0, value=1000.0, step=1000.0, format="%.2f")
-max_c = c1.number_input("Crédito Máx (R$)", min_value=1000.0, value=710000.0, step=10000.0, format="%.2f")
-max_e = c2.number_input("Entrada Máx (R$)", 280000.0, step=5000.0, format="%.2f")
-max_p = c2.number_input("Parcela Máx (R$)", 4500.0, step=100.0, format="%.2f")
-max_k = st.slider("Custo Máx (%)", 0.0, 1.0, 0.55, 0.01)
+
+# --- CORREÇÃO: min_value=0.0 PARA REMOVER TODAS AS TRAVAS ---
+# Crédito Mínimo: Inicia zerado, aceita qualquer valor
+min_c = c1.number_input("Crédito Mín (R$)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
+
+# Crédito Máximo: Inicia alto (5 Milhões) para "pegar tudo", mas você pode diminuir para quanto quiser (min_value=0)
+max_c = c1.number_input("Crédito Máx (R$)", min_value=0.0, value=5000000.0, step=1000.0, format="%.2f")
+
+# Outros campos também destravados
+max_e = c2.number_input("Entrada Máx (R$)", min_value=0.0, value=1000000.0, step=5000.0, format="%.2f")
+max_p = c2.number_input("Parcela Máx (R$)", min_value=0.0, value=100000.0, step=100.0, format="%.2f")
+max_k = st.slider("Custo Máx (%)", 0.0, 1.0, 0.60, 0.01)
 
 if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
     if texto_site:
         cotas = extrair_dados_universal(texto_site)
         if cotas:
+            # Passando filtros. Se o filtro for 0, a lógica interna considera "sem limite" se necessário, 
+            # mas no caso de máx, colocamos valores padrão bem altos no input.
             df = processar_combinacoes(cotas, min_c, max_c, max_e, max_p, max_k)
             if not df.empty:
                 df = df.sort_values(by='Custo Real (%)')
                 st.success(f"{len(df)} Oportunidades Encontradas!")
+                
                 st.dataframe(
                     df,
                     column_config={
@@ -255,20 +278,26 @@ if st.button("🔍 LOCALIZAR OPORTUNIDADES"):
                         "Custo Real (%)": st.column_config.NumberColumn(format="%.2f %%"),
                     }, hide_index=True
                 )
+                
                 c_pdf, c_xls, c_goog = st.columns(3)
+                
                 try:
                     pdf_data = gerar_pdf_simples(df)
-                    c_pdf.download_button("📄 Baixar PDF", pdf_data, "JBS.pdf", "application/pdf")
-                except: c_pdf.error("Erro PDF")
+                    c_pdf.download_button("📄 Baixar PDF", pdf_data, "JBS_Oportunidades.pdf", "application/pdf")
+                except Exception as e: c_pdf.error(f"Erro PDF: {e}")
+
                 buf = BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False)
-                c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS.xlsx")
+                c_xls.download_button("📊 Baixar Excel", buf.getvalue(), "JBS_Oportunidades.xlsx")
+                
                 if c_goog.button("🌐 Gerar Link Google Sheets"):
                     url, msg = criar_planilha_google(df)
                     if url: st.success(f"Link Criado: [Abrir Planilha]({url})")
                     else: st.error(f"Erro: {msg}")
             else:
-                st.warning("Nenhuma oportunidade encontrada.")
+                st.warning("Nenhuma oportunidade encontrada com esses filtros.")
+        else:
+            st.warning("Não consegui ler nenhuma cota válida no texto colado.")
     else:
-        st.error("Cole os dados primeiro.")
+        st.error("Por favor, cole os dados no campo acima primeiro.")
