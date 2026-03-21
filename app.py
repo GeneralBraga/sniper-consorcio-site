@@ -172,9 +172,81 @@ _ADMINS = ['BRADESCO','SANTANDER','ITAÚ','ITAU','PORTO SEGURO','PORTO','CAIXA',
            'ZEMA','BANCORBRÁS','BANCORBRAS','SERVOPA','WOOP','SOMPO','MAGALU']
 
 
+def _detectar_formato(texto: str) -> str:
+    """Detecta se o texto é formato iContemplados (tem 'Saldo devedor:' explícito)
+    ou formato genérico (tabela/texto livre como Piffer)."""
+    if re.search(r'saldo\s+devedor\s*:', texto, re.IGNORECASE):
+        return "icontemplados"
+    return "generico"
+
+
+def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
+    """Parser dedicado para sites no padrão iContemplados.
+    Lê campos estruturados: Administradora, Crédito, Entrada, Parcelas, Saldo devedor.
+    """
+    lista, id_c = [], 1
+    blocos = re.split(r'(?i)(?=administradora\s*:)', texto)
+
+    for bloco in blocos:
+        if 'administradora' not in bloco.lower(): continue
+        if len(bloco.strip()) < 30: continue
+        try:
+            m = re.search(r'administradora\s*:\s*\*?\*?([^\n\*]+)', bloco, re.IGNORECASE)
+            admin_raw = m.group(1).strip() if m else "OUTROS"
+            admin = admin_raw.upper()
+            for adm in _ADMINS:
+                if adm.lower() in admin_raw.lower():
+                    admin = adm.upper()
+                    break
+
+            m = re.search(r'cr[eé]dito\s*:\s*\*?\*?\s*R\$\s*([\d\.,]+)', bloco, re.IGNORECASE)
+            credito = limpar_moeda(m.group(1)) if m else 0.0
+            if credito <= 0: continue
+
+            m = re.search(r'segmento\s*:\s*\*?\*?([^\n\*]+)', bloco, re.IGNORECASE)
+            tipo_raw = m.group(1).strip().lower() if m else ""
+            if any(k in tipo_raw for k in ('imóvel','imovel','imov')): tipo = "Imóvel"
+            elif any(k in tipo_raw for k in ('pesado','caminhão','caminhao','truck')): tipo = "Pesados"
+            elif any(k in tipo_raw for k in ('veículo','veiculo','auto','carro','moto')): tipo = "Automóvel"
+            else: tipo = "Imóvel" if credito > 250000 else "Automóvel"
+
+            if tipo_sel not in ("Todos","Geral") and tipo != tipo_sel: continue
+
+            m = re.search(r'entrada\s*:\s*\*?\*?\s*R\$\s*([\d\.,]+)', bloco, re.IGNORECASE)
+            entrada = limpar_moeda(m.group(1)) if m else 0.0
+            if entrada <= 0: continue
+
+            m = re.search(r'saldo\s+devedor\s*:\s*\*?\*?\s*R\$\s*([\d\.,]+)', bloco, re.IGNORECASE)
+            saldo = limpar_moeda(m.group(1)) if m else 0.0
+
+            m = re.search(r'parcelas?\s*:\s*\*?\*?\s*(\d+)\s*[xX]\s*R?\$?\s*([\d\.,]+)', bloco, re.IGNORECASE)
+            parcela = limpar_moeda(m.group(2)) if m else 0.0
+
+            if saldo <= 0:
+                saldo = max(credito * 1.25 - entrada, credito * 0.20)
+
+            lista.append({
+                'ID': id_c, 'Admin': admin, 'Tipo': tipo,
+                'Crédito': credito, 'Entrada': entrada,
+                'Parcela': parcela, 'Saldo': saldo,
+                'CustoTotal': entrada + saldo,
+                'EntradaPct': entrada / credito,
+            })
+            id_c += 1
+        except Exception:
+            continue
+    return lista
+
+
 def extrair_dados_universal(texto: str, tipo_sel: str) -> list:
     if not texto or not texto.strip(): return []
     texto_limpo = "\n".join(ln.strip() for ln in texto.replace('\r\n','\n').replace('\r','\n').split('\n') if ln.strip())
+
+    # Detecta formato e usa parser adequado
+    if _detectar_formato(texto_limpo) == "icontemplados":
+        return extrair_icontemplados(texto_limpo, tipo_sel)
+
+    # Parser genérico (Piffer, WhatsApp, texto livre)
     blocos = re.split(r'(?i)(?=\b(?:imóvel|imovel|automóvel|automovel|veículo|veiculo|caminhão|caminhao|moto)\b)', texto_limpo)
     if len(blocos) < 2: blocos = re.split(r'\n\s*\n+', texto_limpo)
     if len(blocos) < 2: blocos = [texto_limpo]
@@ -296,7 +368,7 @@ def gerar_hash(texto, *args):
 
 
 # ════════════════════════════════════════════════════════════
-#  PDF  —  gerado sob demanda
+#  PDF
 # ════════════════════════════════════════════════════════════
 def _san(t: str) -> str:
     return str(t).encode('latin-1','replace').decode('latin-1')
@@ -342,18 +414,16 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
 
 
 # ════════════════════════════════════════════════════════════
-#  EXCEL  —  gerado sob demanda
+#  EXCEL
 # ════════════════════════════════════════════════════════════
 def gerar_excel(df: pd.DataFrame, cotas: list) -> bytes:
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     GOLD_HEX, ZEBRA = "84754e", "f5f5f0"
-    # Formato BR nativo do Excel (separador de milhar = ponto, decimal = vírgula)
     FMT_BRL = '_-"R$"* #.##0,00_-;-"R$"* #.##0,00_-;_-"R$"* "-"??_-;_-@_-'
     FMT_PCT = '0,00"%"'
     FMT_NUM = '#.##0'
-    borda = Border(*[Side(style='thin',color='CCCCCC')]*0,
-                   left=Side(style='thin',color='CCCCCC'),
+    borda = Border(left=Side(style='thin',color='CCCCCC'),
                    right=Side(style='thin',color='CCCCCC'),
                    top=Side(style='thin',color='CCCCCC'),
                    bottom=Side(style='thin',color='CCCCCC'))
@@ -493,7 +563,7 @@ if buscar:
 
 
 # ════════════════════════════════════════════════════════════
-#  RESULTADOS  +  DOWNLOADS (gerados aqui — nunca dependem do cache)
+#  RESULTADOS + DOWNLOADS
 # ════════════════════════════════════════════════════════════
 if st.session_state.df_resultado is not None:
     df_show = st.session_state.df_resultado
@@ -510,7 +580,6 @@ if st.session_state.df_resultado is not None:
         m5.metric("💎 Ouro/Imperdível", str(len(df_show[df_show['STATUS'].str.contains("OURO|IMPERDÍVEL")])))
         st.markdown("")
 
-        # tabela com formatação BR
         df_exib = df_show.copy()
         for col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'):
             df_exib[col] = df_exib[col].apply(fmt_brl)
@@ -532,20 +601,15 @@ if st.session_state.df_resultado is not None:
                 df_c['EntradaPct'] = df_c['EntradaPct'].apply(fmt_pct)
                 st.dataframe(df_c, hide_index=True, use_container_width=True)
 
-        # ── DOWNLOADS — gerados aqui no bloco de exibição ──
-        # Motivo: se resultado vier do cache, o bloco "if buscar" não roda.
-        # Aqui sempre roda quando há resultado para mostrar.
         st.markdown(f"<h3 style='margin-top:20px'>⬇️ EXPORTAR</h3>", unsafe_allow_html=True)
         dl1, dl2, dl3 = st.columns(3)
         ts = datetime.now().strftime('%Y%m%d_%H%M')
 
-        # CSV — sempre disponível
         csv_b = df_show.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
         dl1.download_button("📄  Baixar CSV", data=csv_b,
                             file_name=f"sniper_{ts}.csv", mime="text/csv",
                             use_container_width=True)
 
-        # Excel
         try:
             xl_b = gerar_excel(df_show, st.session_state.cotas_lidas)
             dl2.download_button("📊  Baixar Excel", data=xl_b,
@@ -555,7 +619,6 @@ if st.session_state.df_resultado is not None:
         except Exception as ex:
             dl2.error(f"Excel: {ex}")
 
-        # PDF
         try:
             pdf_b = gerar_pdf(df_show.head(200))
             dl3.download_button("📑  Baixar PDF", data=pdf_b,
