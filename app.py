@@ -307,8 +307,9 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
         and (admin_filtro == "Todas"           or c['Admin'] == admin_filtro)
         and c['Admin']   != "OUTROS"
         and c['Entrada'] <= max_ent * ENT_TOL
-        and c['Crédito'] <= max_cred
-        and c['Crédito'] >= min_cred * 0.5
+        and c['Crédito'] <= max_cred          # cota individual não pode passar do máximo
+        # SEM filtro de crédito mínimo individual — cotas pequenas podem se combinar
+        # e atingir o mínimo juntas (ex: 4x R$170k = R$680k com min=650k)
     ]
     if not filtradas:
         return pd.DataFrame()
