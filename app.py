@@ -1,7 +1,7 @@
 # ============================================================
-#  JBS SNIPER — app.py  v3
-#  Fixes: download sem zerar pesquisa, Excel formatado,
-#         Google Sheets removido, PDF corrigido
+#  JBS SNIPER — app.py  v4
+#  Fixes: PDF/Excel geração corrigida, formato BR (R$ X.XXX,XX)
+#         filtro combinatório restaurado
 # ============================================================
 
 import streamlit as st
@@ -14,7 +14,6 @@ from io import BytesIO
 from fpdf import FPDF
 from datetime import datetime
 
-# ── Favicon ─────────────────────────────────────────────────
 _favicon = "logo_pdf.png" if os.path.exists("logo_pdf.png") else "🎯"
 
 st.set_page_config(
@@ -24,7 +23,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Paleta ──────────────────────────────────────────────────
 GOLD   = "#84754e"
 BEIGE  = "#ecece4"
 BG     = "#0e1117"
@@ -111,14 +109,28 @@ with col_title:
         </p>
     </div>
     """, unsafe_allow_html=True)
-
 st.markdown(f"<hr style='border:1px solid {GOLD};margin-top:4px'>", unsafe_allow_html=True)
+
+
+# ════════════════════════════════════════════════════════════
+#  FORMATAÇÃO BR  →  R$ 1.234.567,89
+# ════════════════════════════════════════════════════════════
+def fmt_brl(valor: float) -> str:
+    """Formata número para padrão brasileiro: R$ 1.234.567,89"""
+    try:
+        s = f"{valor:,.2f}"          # 1,234,567.89  (padrão US)
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")  # 1.234.567,89
+        return f"R$ {s}"
+    except Exception:
+        return "R$ 0,00"
+
+def fmt_pct(valor: float) -> str:
+    return f"{valor:.2f}%".replace(".", ",")
 
 
 # ════════════════════════════════════════════════════════════
 #  UTILITÁRIOS
 # ════════════════════════════════════════════════════════════
-
 def limpar_moeda(texto: str) -> float:
     if not texto:
         return 0.0
@@ -159,7 +171,6 @@ def _detectar_tipo(bloco_lower: str) -> str:
 # ════════════════════════════════════════════════════════════
 #  EXTRAÇÃO
 # ════════════════════════════════════════════════════════════
-
 _RE_CREDITO = re.compile(
     r'(?:cr[eé]dito|bem|valor[\s_]do[\s_]bem|valor[\s_]carta)[^\d\n]{0,25}?R\$\s*([\d\.,]+)',
     re.IGNORECASE)
@@ -187,7 +198,6 @@ def extrair_dados_universal(texto_copiado: str, tipo_selecionado: str) -> list:
         ln.strip() for ln in texto_copiado.replace('\r\n','\n').replace('\r','\n').split('\n')
         if ln.strip()
     )
-
     blocos = re.split(
         r'(?i)(?=\b(?:imóvel|imovel|automóvel|automovel|veículo|veiculo|caminhão|caminhao|moto)\b)',
         texto_limpo
@@ -198,7 +208,6 @@ def extrair_dados_universal(texto_copiado: str, tipo_selecionado: str) -> list:
         blocos = [texto_limpo]
 
     id_cota = 1
-
     for bloco in blocos:
         if len(bloco.strip()) < 20:
             continue
@@ -228,7 +237,6 @@ def extrair_dados_universal(texto_copiado: str, tipo_selecionado: str) -> list:
 
             if tipo_cota == "Geral":
                 tipo_cota = "Imóvel" if credito > 250000 else "Automóvel"
-
             if tipo_selecionado not in ("Todos","Geral") and tipo_cota != tipo_selecionado:
                 continue
 
@@ -265,8 +273,6 @@ def extrair_dados_universal(texto_copiado: str, tipo_selecionado: str) -> list:
             if saldo_devedor <= 0:
                 saldo_devedor = max(credito * 1.25 - entrada, credito * 0.20)
 
-            custo_total = entrada + saldo_devedor
-
             lista_cotas.append({
                 'ID':         id_cota,
                 'Admin':      admin,
@@ -275,20 +281,18 @@ def extrair_dados_universal(texto_copiado: str, tipo_selecionado: str) -> list:
                 'Entrada':    entrada,
                 'Parcela':    parcela_teto,
                 'Saldo':      saldo_devedor,
-                'CustoTotal': custo_total,
+                'CustoTotal': entrada + saldo_devedor,
                 'EntradaPct': entrada / credito,
             })
             id_cota += 1
         except Exception:
             continue
-
     return lista_cotas
 
 
 # ════════════════════════════════════════════════════════════
 #  MOTOR
 # ════════════════════════════════════════════════════════════
-
 def _status(custo_real: float) -> str:
     if   custo_real <= 0.20: return "💎 OURO"
     elif custo_real <= 0.35: return "🔥 IMPERDÍVEL"
@@ -307,9 +311,8 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
         and (admin_filtro == "Todas"           or c['Admin'] == admin_filtro)
         and c['Admin']   != "OUTROS"
         and c['Entrada'] <= max_ent * ENT_TOL
-        and c['Crédito'] <= max_cred          # cota individual não pode passar do máximo
-        # SEM filtro de crédito mínimo individual — cotas pequenas podem se combinar
-        # e atingir o mínimo juntas (ex: 4x R$170k = R$680k com min=650k)
+        and c['Crédito'] <= max_cred
+        # SEM filtro de crédito mínimo individual — cotas pequenas combinam para atingir o mínimo
     ]
     if not filtradas:
         return pd.DataFrame()
@@ -360,7 +363,7 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
 
                 ids      = " + ".join(str(c['ID']) for c in combo)
                 detalhes = " || ".join(
-                    f"[ID {c['ID']}] {c['Admin']} · R$ {c['Crédito']:,.0f}" for c in combo
+                    f"[ID {c['ID']}] {c['Admin']} · {fmt_brl(c['Crédito'])}" for c in combo
                 )
                 prazo = int(soma_saldo / soma_parc) if soma_parc > 0 else 0
 
@@ -390,7 +393,6 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
 # ════════════════════════════════════════════════════════════
 #  CACHE
 # ════════════════════════════════════════════════════════════
-
 @st.cache_data(max_entries=30, ttl=600, show_spinner=False)
 def buscar_cached(_hash, texto, min_cred, max_cred, max_ent, max_parc, max_custo, tipo, admin):
     cotas = extrair_dados_universal(texto, tipo)
@@ -405,11 +407,9 @@ def gerar_hash(texto, *args):
 
 
 # ════════════════════════════════════════════════════════════
-#  EXPORTAÇÃO — gerada uma vez e armazenada no session_state
-#  para não zerar a pesquisa ao clicar em download
+#  PDF
 # ════════════════════════════════════════════════════════════
-
-def _sanitizar(texto: str) -> str:
+def _san(texto: str) -> str:
     return texto.encode('latin-1','replace').decode('latin-1')
 
 
@@ -422,7 +422,7 @@ class RelatorioPDF(FPDF):
         self.set_font('Arial','B',14)
         self.set_text_color(255,255,255)
         self.set_xy(38, 5)
-        self.cell(0, 10, 'JBS SNIPER  |  RELATÓRIO DE OPORTUNIDADES', 0, 1, 'L')
+        self.cell(0, 10, 'JBS SNIPER  |  RELATORIO DE OPORTUNIDADES', 0, 1, 'L')
         self.set_font('Arial','',7)
         self.set_xy(38, 13)
         self.cell(0, 5, f'Gerado em {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'L')
@@ -432,7 +432,7 @@ class RelatorioPDF(FPDF):
         self.set_y(-12)
         self.set_font('Arial','I',7)
         self.set_text_color(150,150,150)
-        self.cell(0, 8, f'JBS SNIPER  |  Página {self.page_no()}', 0, 0, 'C')
+        self.cell(0, 8, f'JBS SNIPER  |  Pagina {self.page_no()}', 0, 0, 'C')
 
 
 def gerar_pdf_bytes(df: pd.DataFrame) -> bytes:
@@ -443,8 +443,8 @@ def gerar_pdf_bytes(df: pd.DataFrame) -> bytes:
     pdf.set_text_color(30,30,30)
     pdf.set_font('Arial','B',7)
 
-    cols = ["STS","ADMIN","TIPO","CRÉDITO","ENTRADA","ENT%","SALDO","CUSTO TOT","PRZ","PARCELA","EFETIVO%","DETALHES"]
-    wids = [18,    20,     16,    26,        26,       10,    26,     26,         8,    22,        13,        76]
+    cols = ["STS","ADMIN","TIPO","CREDITO","ENTRADA","ENT%","SALDO","CUSTO TOT","PRZ","PARCELA","EFETIVO%","DETALHES"]
+    wids = [18,    20,     14,    28,        28,       10,    28,     28,         8,    24,        13,        70]
 
     for h, w in zip(cols, wids):
         pdf.cell(w, 7, h, 1, 0, 'C', True)
@@ -453,147 +453,133 @@ def gerar_pdf_bytes(df: pd.DataFrame) -> bytes:
 
     for i, (_, row) in enumerate(df.iterrows()):
         fill = (i % 2 == 0)
-        if fill:
-            pdf.set_fill_color(245,245,240)
-        else:
-            pdf.set_fill_color(255,255,255)
-        pdf.cell(wids[0],  6, _sanitizar(str(row['STATUS']))[:8],           1,0,'C',fill)
-        pdf.cell(wids[1],  6, _sanitizar(str(row['ADMINISTRADORA']))[:12],   1,0,'C',fill)
-        pdf.cell(wids[2],  6, _sanitizar(str(row['TIPO']))[:10],             1,0,'C',fill)
-        pdf.cell(wids[3],  6, f"R$ {row['CRÉDITO TOTAL']:,.0f}",             1,0,'R',fill)
-        pdf.cell(wids[4],  6, f"R$ {row['ENTRADA TOTAL']:,.0f}",             1,0,'R',fill)
-        pdf.cell(wids[5],  6, f"{row['ENTRADA %']:.1f}%",                    1,0,'C',fill)
-        pdf.cell(wids[6],  6, f"R$ {row['SALDO DEVEDOR']:,.0f}",             1,0,'R',fill)
-        pdf.cell(wids[7],  6, f"R$ {row['CUSTO TOTAL']:,.0f}",               1,0,'R',fill)
-        pdf.cell(wids[8],  6, str(int(row['PRAZO (meses)'])),                1,0,'C',fill)
-        pdf.cell(wids[9],  6, f"R$ {row['PARCELA MENSAL']:,.0f}",            1,0,'R',fill)
-        pdf.cell(wids[10], 6, f"{row['CUSTO EFETIVO %']:.1f}%",              1,0,'C',fill)
-        pdf.cell(wids[11], 6, _sanitizar(str(row['DETALHES']))[:55],         1,1,'L',fill)
+        pdf.set_fill_color(245,245,240) if fill else pdf.set_fill_color(255,255,255)
+        pdf.cell(wids[0],  6, _san(str(row['STATUS']))[:8],                      1,0,'C',fill)
+        pdf.cell(wids[1],  6, _san(str(row['ADMINISTRADORA']))[:14],              1,0,'C',fill)
+        pdf.cell(wids[2],  6, _san(str(row['TIPO']))[:10],                        1,0,'C',fill)
+        pdf.cell(wids[3],  6, _san(fmt_brl(row['CRÉDITO TOTAL'])),                1,0,'R',fill)
+        pdf.cell(wids[4],  6, _san(fmt_brl(row['ENTRADA TOTAL'])),                1,0,'R',fill)
+        pdf.cell(wids[5],  6, _san(fmt_pct(row['ENTRADA %'])),                    1,0,'C',fill)
+        pdf.cell(wids[6],  6, _san(fmt_brl(row['SALDO DEVEDOR'])),                1,0,'R',fill)
+        pdf.cell(wids[7],  6, _san(fmt_brl(row['CUSTO TOTAL'])),                  1,0,'R',fill)
+        pdf.cell(wids[8],  6, str(int(row['PRAZO (meses)'])),                     1,0,'C',fill)
+        pdf.cell(wids[9],  6, _san(fmt_brl(row['PARCELA MENSAL'])),               1,0,'R',fill)
+        pdf.cell(wids[10], 6, _san(fmt_pct(row['CUSTO EFETIVO %'])),              1,0,'C',fill)
+        pdf.cell(wids[11], 6, _san(str(row['DETALHES']))[:55],                    1,1,'L',fill)
 
     return bytes(pdf.output(dest='S'))
 
 
+# ════════════════════════════════════════════════════════════
+#  EXCEL
+# ════════════════════════════════════════════════════════════
 def gerar_excel_bytes(df: pd.DataFrame, cotas: list) -> bytes:
-    """Excel formatado: moeda, %, larguras de coluna ajustadas."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    GOLD_HEX  = "84754e"
+    ZEBRA_HEX = "f5f5f0"
+    FMT_BRL   = '"R$" #.##0,00'          # formato BR para Excel
+    FMT_PCT   = '0,00"%"'
+    FMT_NUM   = '#.##0'
+
+    borda = Border(
+        left=Side(style='thin', color='CCCCCC'),
+        right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'),
+        bottom=Side(style='thin', color='CCCCCC'),
+    )
+
+    col_names  = list(df.columns)
+    col_widths = {
+        'STATUS':18,'ADMINISTRADORA':16,'TIPO':12,'IDS':24,
+        'CRÉDITO TOTAL':20,'ENTRADA TOTAL':20,'ENTRADA %':13,
+        'SALDO DEVEDOR':20,'CUSTO TOTAL':20,'PRAZO (meses)':14,
+        'PARCELA MENSAL':20,'CUSTO EFETIVO %':17,'DETALHES':55,
+    }
+    fmt_map = {}
+    for i, col in enumerate(col_names, start=1):
+        if col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'):
+            fmt_map[i] = FMT_BRL
+        elif col in ('ENTRADA %','CUSTO EFETIVO %'):
+            fmt_map[i] = FMT_PCT
+        elif col == 'PRAZO (meses)':
+            fmt_map[i] = FMT_NUM
+
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        # ── aba Oportunidades ────────────────────────────────
         df.to_excel(writer, index=False, sheet_name='Oportunidades')
         ws = writer.sheets['Oportunidades']
-
-        from openpyxl.styles import (PatternFill, Font, Alignment,
-                                     Border, Side, numbers)
-        from openpyxl.utils import get_column_letter
-
-        GOLD_HEX  = "84754e"
-        BEIGE_HEX = "ecece4"
-        DARK_HEX  = "1c1f26"
-        ZEBRA_HEX = "f5f5f0"
-
-        borda = Border(
-            left=Side(style='thin', color='CCCCCC'),
-            right=Side(style='thin', color='CCCCCC'),
-            top=Side(style='thin', color='CCCCCC'),
-            bottom=Side(style='thin', color='CCCCCC'),
-        )
-
-        # formatos
-        FMT_BRL  = 'R$ #,##0.00'
-        FMT_BRL0 = 'R$ #,##0'
-        FMT_PCT  = '0.00"%"'
-        FMT_NUM  = '#,##0'
-
-        # mapeamento coluna → formato
-        col_names = list(df.columns)
-        fmt_map = {}
-        for i, col in enumerate(col_names, start=1):
-            if col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'):
-                fmt_map[i] = FMT_BRL0
-            elif col in ('ENTRADA %','CUSTO EFETIVO %'):
-                fmt_map[i] = FMT_PCT
-            elif col in ('PRAZO (meses)',):
-                fmt_map[i] = FMT_NUM
-
-        # larguras de coluna
-        col_widths = {
-            'STATUS':18, 'ADMINISTRADORA':16, 'TIPO':12, 'IDS':22,
-            'CRÉDITO TOTAL':18, 'ENTRADA TOTAL':18, 'ENTRADA %':12,
-            'SALDO DEVEDOR':18, 'CUSTO TOTAL':18, 'PRAZO (meses)':14,
-            'PARCELA MENSAL':18, 'CUSTO EFETIVO %':16, 'DETALHES':55,
-        }
 
         # cabeçalho
         for cell in ws[1]:
             cell.fill      = PatternFill("solid", fgColor=GOLD_HEX)
             cell.font      = Font(bold=True, color="FFFFFF", size=10)
-            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
             cell.border    = borda
-            col_name = col_names[cell.column - 1]
-            ws.column_dimensions[get_column_letter(cell.column)].width = col_widths.get(col_name, 14)
+            cn = col_names[cell.column - 1]
+            ws.column_dimensions[get_column_letter(cell.column)].width = col_widths.get(cn, 14)
+        ws.row_dimensions[1].height = 22
 
-        ws.row_dimensions[1].height = 20
-
-        # linhas de dados
+        # dados
         for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
             zebra = (row_idx % 2 == 0)
             for cell in row:
-                cell.border    = borda
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
-                cell.font      = Font(size=9)
+                cell.border = borda
+                cell.font   = Font(size=9)
                 if zebra:
                     cell.fill = PatternFill("solid", fgColor=ZEBRA_HEX)
-                col_idx = cell.column
-                if col_idx in fmt_map:
-                    cell.number_format = fmt_map[col_idx]
-                    # garante que o valor seja numérico
+                ci = cell.column
+                cn = col_names[ci - 1]
+                # numérico com formato BR
+                if ci in fmt_map:
+                    cell.number_format = fmt_map[ci]
                     try:
                         cell.value = float(cell.value) if cell.value not in (None,'') else cell.value
                     except (ValueError, TypeError):
                         pass
-                # alinha texto à esquerda para detalhes e IDs
-                col_name = col_names[col_idx - 1]
-                if col_name in ('DETALHES','IDS','STATUS','ADMINISTRADORA','TIPO'):
+                    cell.alignment = Alignment(horizontal='right', vertical='center')
+                elif cn in ('DETALHES','IDS'):
                     cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
+                else:
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
 
         ws.freeze_panes = 'A2'
         ws.auto_filter.ref = ws.dimensions
 
-        # ── aba Cotas Lidas ──────────────────────────────────
+        # aba Cotas Lidas
         if cotas:
-            df_cotas = pd.DataFrame(cotas)
-            df_cotas.to_excel(writer, index=False, sheet_name='Cotas Lidas')
+            df_c = pd.DataFrame(cotas)
+            df_c.to_excel(writer, index=False, sheet_name='Cotas Lidas')
             ws2 = writer.sheets['Cotas Lidas']
-            cotas_widths = {
-                'ID':6,'Admin':16,'Tipo':12,'Crédito':18,'Entrada':18,
-                'Parcela':18,'Saldo':18,'CustoTotal':18,'EntradaPct':14,
-            }
-            cotas_fmt = {
-                'Crédito':FMT_BRL0,'Entrada':FMT_BRL0,'Parcela':FMT_BRL0,
-                'Saldo':FMT_BRL0,'CustoTotal':FMT_BRL0,'EntradaPct':FMT_PCT,
-            }
-            cotas_cols = list(df_cotas.columns)
+            c_widths = {'ID':6,'Admin':16,'Tipo':12,'Crédito':20,'Entrada':20,
+                        'Parcela':20,'Saldo':20,'CustoTotal':20,'EntradaPct':14}
+            c_fmt = {'Crédito':FMT_BRL,'Entrada':FMT_BRL,'Parcela':FMT_BRL,
+                     'Saldo':FMT_BRL,'CustoTotal':FMT_BRL,'EntradaPct':FMT_PCT}
+            c_cols = list(df_c.columns)
             for cell in ws2[1]:
                 cell.fill      = PatternFill("solid", fgColor=GOLD_HEX)
                 cell.font      = Font(bold=True, color="FFFFFF", size=10)
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.border    = borda
-                cn = cotas_cols[cell.column - 1]
-                ws2.column_dimensions[get_column_letter(cell.column)].width = cotas_widths.get(cn, 14)
+                cn = c_cols[cell.column - 1]
+                ws2.column_dimensions[get_column_letter(cell.column)].width = c_widths.get(cn, 14)
             for row_idx, row in enumerate(ws2.iter_rows(min_row=2, max_row=ws2.max_row), start=2):
                 zebra = (row_idx % 2 == 0)
                 for cell in row:
-                    cell.border    = borda
+                    cell.border = borda
+                    cell.font   = Font(size=9)
                     cell.alignment = Alignment(horizontal='center', vertical='center')
-                    cell.font      = Font(size=9)
                     if zebra:
                         cell.fill = PatternFill("solid", fgColor=ZEBRA_HEX)
-                    cn = cotas_cols[cell.column - 1]
-                    if cn in cotas_fmt:
-                        cell.number_format = cotas_fmt[cn]
+                    cn = c_cols[cell.column - 1]
+                    if cn in c_fmt:
+                        cell.number_format = c_fmt[cn]
                         try:
                             cell.value = float(cell.value) if cell.value not in (None,'') else cell.value
                         except (ValueError, TypeError):
                             pass
+                        cell.alignment = Alignment(horizontal='right', vertical='center')
             ws2.freeze_panes = 'A2'
 
     return buf.getvalue()
@@ -689,19 +675,22 @@ if buscar:
 
         st.session_state.df_resultado = df
 
-        # ── pré-gera os arquivos de exportação IMEDIATAMENTE ──
-        # Isso evita o re-run que zera a pesquisa ao clicar em download
-        if not df.empty:
+        # gera exportações logo após a busca, enquanto df está fresco
+        if df is not None and not df.empty:
             ts = datetime.now().strftime('%Y%m%d_%H%M')
             st.session_state.export_ts = ts
+            # PDF
             try:
                 st.session_state.pdf_bytes = gerar_pdf_bytes(df.head(200))
-            except Exception as e:
+            except Exception as ex:
                 st.session_state.pdf_bytes = None
+                st.warning(f"PDF: {ex}")
+            # Excel
             try:
                 st.session_state.excel_bytes = gerar_excel_bytes(df, st.session_state.cotas_lidas)
-            except Exception as e:
+            except Exception as ex:
                 st.session_state.excel_bytes = None
+                st.warning(f"Excel: {ex}")
         else:
             st.session_state.pdf_bytes   = None
             st.session_state.excel_bytes = None
@@ -720,62 +709,43 @@ if st.session_state.df_resultado is not None:
 
         m1,m2,m3,m4,m5 = st.columns(5)
         m1.metric("Oportunidades",    f"{len(df_show)}")
-        m2.metric("Menor custo",      f"{df_show['CUSTO EFETIVO %'].min():.1f}%")
-        m3.metric("Menor entrada",    f"R$ {df_show['ENTRADA TOTAL'].min():,.0f}")
-        m4.metric("Maior crédito",    f"R$ {df_show['CRÉDITO TOTAL'].max():,.0f}")
+        m2.metric("Menor custo",      fmt_pct(df_show['CUSTO EFETIVO %'].min()))
+        m3.metric("Menor entrada",    fmt_brl(df_show['ENTRADA TOTAL'].min()))
+        m4.metric("Maior crédito",    fmt_brl(df_show['CRÉDITO TOTAL'].max()))
         ouro = len(df_show[df_show['STATUS'].str.contains("OURO|IMPERDÍVEL")])
         m5.metric("💎 Ouro/Imperdível", str(ouro))
 
         st.markdown("")
 
-        col_config = {
-            "CRÉDITO TOTAL":   st.column_config.NumberColumn("Crédito",    format="R$ %.0f"),
-            "ENTRADA TOTAL":   st.column_config.NumberColumn("Entrada",    format="R$ %.0f"),
-            "ENTRADA %":       st.column_config.NumberColumn("Entrada %",  format="%.1f %%"),
-            "SALDO DEVEDOR":   st.column_config.NumberColumn("Saldo Dev.", format="R$ %.0f"),
-            "CUSTO TOTAL":     st.column_config.NumberColumn("Custo Tot.", format="R$ %.0f"),
-            "PARCELA MENSAL":  st.column_config.NumberColumn("Parcela",    format="R$ %.0f"),
-            "PRAZO (meses)":   st.column_config.NumberColumn("Prazo",      format="%d m"),
-            "CUSTO EFETIVO %": st.column_config.NumberColumn("Custo Ef.%", format="%.2f %%"),
-        }
-        colunas_tabela = [c for c in df_show.columns if c != 'DETALHES']
-        st.dataframe(
-            df_show[colunas_tabela],
-            column_config=col_config,
-            hide_index=True,
-            use_container_width=True,
-            height=420,
-        )
+        # colunas formatadas em BR para exibição na tabela
+        df_exib = df_show.copy()
+        for col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'):
+            df_exib[col] = df_exib[col].apply(fmt_brl)
+        for col in ('ENTRADA %','CUSTO EFETIVO %'):
+            df_exib[col] = df_exib[col].apply(fmt_pct)
+
+        colunas_tabela = [c for c in df_exib.columns if c != 'DETALHES']
+        st.dataframe(df_exib[colunas_tabela], hide_index=True, use_container_width=True, height=420)
 
         with st.expander("🔎  Ver detalhes das combinações (IDs das cotas)"):
             st.dataframe(
-                df_show[['STATUS','ADMINISTRADORA','IDS','CUSTO EFETIVO %','DETALHES']],
-                column_config={"CUSTO EFETIVO %": st.column_config.NumberColumn(format="%.2f %%")},
+                df_exib[['STATUS','ADMINISTRADORA','IDS','CUSTO EFETIVO %','DETALHES']],
                 hide_index=True, use_container_width=True,
             )
 
         if st.session_state.cotas_lidas:
             with st.expander("📋  Ver cotas lidas individualmente"):
-                df_cotas = pd.DataFrame(st.session_state.cotas_lidas)
-                st.dataframe(
-                    df_cotas,
-                    column_config={
-                        "Crédito":    st.column_config.NumberColumn(format="R$ %.0f"),
-                        "Entrada":    st.column_config.NumberColumn(format="R$ %.0f"),
-                        "Parcela":    st.column_config.NumberColumn(format="R$ %.0f"),
-                        "Saldo":      st.column_config.NumberColumn(format="R$ %.0f"),
-                        "CustoTotal": st.column_config.NumberColumn("Custo Total", format="R$ %.0f"),
-                        "EntradaPct": st.column_config.NumberColumn("Entrada %",   format="%.1f %%"),
-                    },
-                    hide_index=True, use_container_width=True,
-                )
+                df_c = pd.DataFrame(st.session_state.cotas_lidas).copy()
+                for col in ('Crédito','Entrada','Parcela','Saldo','CustoTotal'):
+                    df_c[col] = df_c[col].apply(fmt_brl)
+                df_c['EntradaPct'] = df_c['EntradaPct'].apply(fmt_pct)
+                st.dataframe(df_c, hide_index=True, use_container_width=True)
 
-        # ── DOWNLOADS — usam bytes pré-gerados → não zeram a pesquisa ──
+        # ── DOWNLOADS ──
         st.markdown(f"<h3 style='margin-top:20px'>⬇️ EXPORTAR</h3>", unsafe_allow_html=True)
         dl1, dl2, dl3 = st.columns(3)
         ts = st.session_state.export_ts or datetime.now().strftime('%Y%m%d_%H%M')
 
-        # CSV — gerado inline (leve, não causa problema)
         csv_bytes = df_show.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
         dl1.download_button(
             label="📄  Baixar CSV",
@@ -785,7 +755,6 @@ if st.session_state.df_resultado is not None:
             use_container_width=True,
         )
 
-        # Excel — usa bytes pré-gerados
         if st.session_state.excel_bytes:
             dl2.download_button(
                 label="📊  Baixar Excel",
@@ -795,9 +764,8 @@ if st.session_state.df_resultado is not None:
                 use_container_width=True,
             )
         else:
-            dl2.info("Excel indisponível.")
+            dl2.warning("⚠️ Excel não gerado.")
 
-        # PDF — usa bytes pré-gerados
         if st.session_state.pdf_bytes:
             dl3.download_button(
                 label="📑  Baixar PDF",
@@ -807,7 +775,7 @@ if st.session_state.df_resultado is not None:
                 use_container_width=True,
             )
         else:
-            dl3.info("PDF indisponível.")
+            dl3.warning("⚠️ PDF não gerado.")
 
 
 # ════════════════════════════════════════════════════════════
