@@ -337,7 +337,8 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
         pdf.cell(wids[9],  6, _san(fmt_brl(row['PARCELA MENSAL'])),   1,0,'R',fill)
         pdf.cell(wids[10], 6, _san(fmt_pct(row['CUSTO EFETIVO %'])),  1,0,'C',fill)
         pdf.cell(wids[11], 6, _san(str(row['DETALHES']))[:55],        1,1,'L',fill)
-    return bytes(pdf.output(dest='S'))
+    out = pdf.output(dest='S')
+    return out if isinstance(out, bytes) else out.encode('latin-1')
 
 
 # ════════════════════════════════════════════════════════════
