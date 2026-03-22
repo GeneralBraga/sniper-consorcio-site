@@ -1,7 +1,6 @@
 # ============================================================
-#  JBS SNIPER — app.py  v5
-#  Fix definitivo: PDF/Excel gerados no bloco de exibição
-#  (não depende do cache hit/miss do st.cache_data)
+#  JBS SNIPER — app.py  v7 DEFINITIVO
+#  3 parsers: icontemplados_detalhe | icontemplados_cards | generico
 # ============================================================
 
 import streamlit as st
@@ -115,26 +114,31 @@ st.markdown(f"<hr style='border:1px solid {GOLD};margin-top:4px'>", unsafe_allow
 # ════════════════════════════════════════════════════════════
 #  FORMATAÇÃO BR
 # ════════════════════════════════════════════════════════════
-def fmt_brl(valor: float) -> str:
+def fmt_brl(valor) -> str:
     try:
-        s = f"{valor:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+        s = f"{float(valor):,.2f}".replace(",","X").replace(".",",").replace("X",".")
         return f"R$ {s}"
     except Exception:
         return "R$ 0,00"
 
-def fmt_pct(valor: float) -> str:
+def fmt_pct(valor) -> str:
     try:
-        return f"{valor:.2f}%".replace(".",",")
+        return f"{float(valor):.2f}%".replace(".",",")
     except Exception:
         return "0,00%"
+
+def fmt_pct_curto(valor) -> str:
+    try:
+        return f"{float(valor):.0f}%"
+    except Exception:
+        return "0%"
 
 
 # ════════════════════════════════════════════════════════════
 #  UTILITÁRIOS
 # ════════════════════════════════════════════════════════════
-def limpar_moeda(texto: str) -> float:
-    if not texto:
-        return 0.0
+def limpar_moeda(texto) -> float:
+    if not texto: return 0.0
     try:
         t = (str(texto).lower().strip()
              .replace('\xa0','').replace('&nbsp;','')
@@ -161,32 +165,67 @@ def _detectar_tipo(b: str) -> str:
 
 
 # ════════════════════════════════════════════════════════════
-#  EXTRAÇÃO
+#  LISTAS GLOBAIS
 # ════════════════════════════════════════════════════════════
+_ADMINS = [
+    'ITAÚ AUTO','ITAU AUTO','BRADESCO AUTO','BRADESCO IMÓVEIS',
+    'BRADESCO','SANTANDER','ITAÚ','ITAU','PORTO SEGURO','PORTO',
+    'CAIXA','BANCO DO BRASIL','BB','RODOBENS','EMBRACON',
+    'ANCORA','ÂNCORA','MYCON','SICREDI','SICOOB','MAPFRE',
+    'HS','YAMAHA','ZEMA','BANCORBRÁS','BANCORBRAS','SERVOPA',
+    'WOOP','SOMPO','MAGALU',
+]
+
+_BANCOS_IC = [
+    'Itaú Auto','Itau Auto','Bradesco Auto','Bradesco Imóveis',
+    'Bradesco','Santander','Porto Seguro','Caixa',
+    'Banco do Brasil','BB','Rodobens','Embracon','Mycon',
+    'Sicredi','Sicoob','Mapfre','Yamaha','Zema',
+    'Magalu','Woop','Sompo','Ancora',
+]
+_BANCOS_IC_LOWER = {b.lower() for b in _BANCOS_IC}
+
+_IGNORAR_IC = {
+    'selecionar','detalhes','reservada','negociar','disponível','disponivel',
+    'código:','codigo:','directions_car','directions_home','directions_bus',
+    'warning','info','check_circle','error',
+    'baixar pdf','baixar excel','selecionar todas','criar filtro',
+    'compartilhar','somar','início','inicio','todos',
+    'automóveis','automoveis','itaú consórcio','itau consorcio',
+    'cartas contempladas para veículo','cartas contempladas para veiculo',
+    'cartas contempladas para imovel','cartas contempladas para imóvel',
+    'imóvel','imovel','veículo','veiculo',
+}
+
 _RE_CREDITO = re.compile(r'(?:cr[eé]dito|bem|valor[\s_]do[\s_]bem|valor[\s_]carta)[^\d\n]{0,25}?R\$\s*([\d\.,]+)', re.IGNORECASE)
 _RE_ENTRADA = re.compile(r'(?:entrada|[aá]gio|lance[\s_]fixo|pago|quero)[^\d\n]{0,25}?R\$\s*([\d\.,]+)', re.IGNORECASE)
 _RE_PARCELA = re.compile(r'(\d+)\s*[xX]\s*R?\$?\s*([\d\.,]+)', re.IGNORECASE)
 _RE_MOEDA   = re.compile(r'R\$\s*([\d\.,]+)', re.IGNORECASE)
-_ADMINS = ['BRADESCO','SANTANDER','ITAÚ','ITAU','PORTO SEGURO','PORTO','CAIXA','BANCO DO BRASIL','BB',
-           'RODOBENS','EMBRACON','ANCORA','ÂNCORA','MYCON','SICREDI','SICOOB','MAPFRE','HS','YAMAHA',
-           'ZEMA','BANCORBRÁS','BANCORBRAS','SERVOPA','WOOP','SOMPO','MAGALU']
 
 
+# ════════════════════════════════════════════════════════════
+#  DETECTOR DE FORMATO
+# ════════════════════════════════════════════════════════════
 def _detectar_formato(texto: str) -> str:
-    """Detecta se o texto é formato iContemplados (tem 'Saldo devedor:' explícito)
-    ou formato genérico (tabela/texto livre como Piffer)."""
+    # 1. iContemplados com Detalhes expandidos
     if re.search(r'saldo\s+devedor\s*:', texto, re.IGNORECASE):
-        return "icontemplados"
+        return "icontemplados_detalhe"
+    # 2. iContemplados cards (sem detalhe): tem banco + "Entrada:\n" + "Parcelas:\n"
+    tem_entrada  = bool(re.search(r'^entrada\s*:?\s*$', texto, re.IGNORECASE | re.MULTILINE))
+    tem_parcelas = bool(re.search(r'^parcelas?\s*:?\s*$', texto, re.IGNORECASE | re.MULTILINE))
+    tem_banco    = any(b in texto for b in _BANCOS_IC)
+    if tem_banco and tem_entrada and tem_parcelas:
+        return "icontemplados_cards"
+    # 3. Genérico
     return "generico"
 
 
-def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
-    """Parser dedicado para sites no padrão iContemplados.
-    Lê campos estruturados: Administradora, Crédito, Entrada, Parcelas, Saldo devedor.
-    """
+# ════════════════════════════════════════════════════════════
+#  PARSER 1 — iContemplados com Detalhes expandidos
+# ════════════════════════════════════════════════════════════
+def _extrair_icontemplados_detalhe(texto: str, tipo_sel: str) -> list:
     lista, id_c = [], 1
     blocos = re.split(r'(?i)(?=administradora\s*:)', texto)
-
     for bloco in blocos:
         if 'administradora' not in bloco.lower(): continue
         if len(bloco.strip()) < 30: continue
@@ -196,8 +235,7 @@ def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
             admin = admin_raw.upper()
             for adm in _ADMINS:
                 if adm.lower() in admin_raw.lower():
-                    admin = adm.upper()
-                    break
+                    admin = adm.upper(); break
 
             m = re.search(r'cr[eé]dito\s*:\s*\*?\*?\s*R\$\s*([\d\.,]+)', bloco, re.IGNORECASE)
             credito = limpar_moeda(m.group(1)) if m else 0.0
@@ -206,7 +244,7 @@ def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
             m = re.search(r'segmento\s*:\s*\*?\*?([^\n\*]+)', bloco, re.IGNORECASE)
             tipo_raw = m.group(1).strip().lower() if m else ""
             if any(k in tipo_raw for k in ('imóvel','imovel','imov')): tipo = "Imóvel"
-            elif any(k in tipo_raw for k in ('pesado','caminhão','caminhao','truck')): tipo = "Pesados"
+            elif any(k in tipo_raw for k in ('pesado','caminhão','caminhao')): tipo = "Pesados"
             elif any(k in tipo_raw for k in ('veículo','veiculo','auto','carro','moto')): tipo = "Automóvel"
             else: tipo = "Imóvel" if credito > 250000 else "Automóvel"
 
@@ -220,7 +258,8 @@ def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
             saldo = limpar_moeda(m.group(1)) if m else 0.0
 
             m = re.search(r'parcelas?\s*:\s*\*?\*?\s*(\d+)\s*[xX]\s*R?\$?\s*([\d\.,]+)', bloco, re.IGNORECASE)
-            parcela = limpar_moeda(m.group(2)) if m else 0.0
+            parcela    = limpar_moeda(m.group(2)) if m else 0.0
+            n_parcelas = int(m.group(1)) if m else 0
 
             if saldo <= 0:
                 saldo = max(credito * 1.25 - entrada, credito * 0.20)
@@ -228,8 +267,8 @@ def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
             lista.append({
                 'ID': id_c, 'Admin': admin, 'Tipo': tipo,
                 'Crédito': credito, 'Entrada': entrada,
-                'Parcela': parcela, 'Saldo': saldo,
-                'CustoTotal': entrada + saldo,
+                'Parcela': parcela, 'NParcelas': n_parcelas,
+                'Saldo': saldo, 'CustoTotal': entrada + saldo,
                 'EntradaPct': entrada / credito,
             })
             id_c += 1
@@ -238,18 +277,147 @@ def extrair_icontemplados(texto: str, tipo_sel: str) -> list:
     return lista
 
 
-def extrair_dados_universal(texto: str, tipo_sel: str) -> list:
-    if not texto or not texto.strip(): return []
-    texto_limpo = "\n".join(ln.strip() for ln in texto.replace('\r\n','\n').replace('\r','\n').split('\n') if ln.strip())
+# ════════════════════════════════════════════════════════════
+#  PARSER 2 — iContemplados cards (Ctrl+A sem expandir Detalhes)
+#
+#  Estrutura real do Ctrl+A:
+#    directions_car        ← ícone (ignora)
+#    Itaú Auto             ← ADMIN (linha = nome de banco)
+#    R$ 23.050,04          ← CRÉDITO (linha seguinte começa com R$)
+#    Entrada:              ← rótulo sozinho
+#    R$ 5.200,00           ← ENTRADA (linha seguinte)
+#    Parcelas:             ← rótulo sozinho
+#    28 x R$ 913,68        ← PARCELAS (linha seguinte)
+#    Código:               ← ignora
+#    593                   ← ignora (número curto)
+#    Selecionar            ← ignora
+# ════════════════════════════════════════════════════════════
+def _extrair_icontemplados_cards(texto: str, tipo_sel: str) -> list:
+    lista, id_c = [], 1
 
-    # Detecta formato e usa parser adequado
-    if _detectar_formato(texto_limpo) == "icontemplados":
-        return extrair_icontemplados(texto_limpo, tipo_sel)
+    # Tipo padrão pelo cabeçalho da página
+    header = texto[:500].lower()
+    if any(k in header for k in ('para veículo','para veiculo','veículo','veiculo')):
+        tipo_default = "Automóvel"
+    elif any(k in header for k in ('para imóvel','para imovel','imóvel','imovel')):
+        tipo_default = "Imóvel"
+    else:
+        tipo_default = "Automóvel"
 
-    # Parser genérico (Piffer, WhatsApp, texto livre)
-    blocos = re.split(r'(?i)(?=\b(?:imóvel|imovel|automóvel|automovel|veículo|veiculo|caminhão|caminhao|moto)\b)', texto_limpo)
-    if len(blocos) < 2: blocos = re.split(r'\n\s*\n+', texto_limpo)
-    if len(blocos) < 2: blocos = [texto_limpo]
+    # Limpa linhas: remove lixo de UI e códigos numéricos
+    linhas = []
+    for ln in texto.replace('\r', '').split('\n'):
+        ln = ln.strip()
+        if not ln: continue
+        if ln.lower() in _IGNORAR_IC: continue
+        if re.match(r'^\d{1,4}$', ln): continue  # código da cota
+        linhas.append(ln)
+
+    i = 0
+    while i < len(linhas):
+        ln = linhas[i]
+
+        # Linha de admin: bate exatamente com banco conhecido
+        # E linha SEGUINTE começa com R$ (crédito)
+        if (ln.lower() in _BANCOS_IC_LOWER
+                and i + 1 < len(linhas)
+                and re.match(r'^R\$\s*[\d\.]+,\d{2}$', linhas[i + 1])):
+
+            admin_raw = ln
+            credito   = limpar_moeda(linhas[i + 1])
+            if credito <= 0:
+                i += 1; continue
+
+            # Tipo pelo nome da admin
+            al = admin_raw.lower()
+            if any(k in al for k in ('auto','automóvel','automovel','veículo','veiculo','carro','moto')):
+                tipo = "Automóvel"
+            elif any(k in al for k in ('imóvel','imovel','imov')):
+                tipo = "Imóvel"
+            elif any(k in al for k in ('caminhão','caminhao','pesado')):
+                tipo = "Pesados"
+            else:
+                tipo = tipo_default
+
+            if tipo_sel not in ("Todos","Geral") and tipo != tipo_sel:
+                i += 2; continue
+
+            # Normaliza nome
+            admin = admin_raw.upper()
+            for adm in _ADMINS:
+                if adm.lower() in admin_raw.lower():
+                    admin = adm.upper(); break
+
+            entrada = parcela = 0.0
+            n_parcelas = 0
+            j = i + 2
+
+            while j < min(i + 14, len(linhas)):
+                lj   = linhas[j]
+                lj_l = lj.lower()
+
+                # "Entrada:" sozinho → valor na próxima linha
+                if lj_l == 'entrada:':
+                    if j + 1 < len(linhas):
+                        entrada = limpar_moeda(linhas[j + 1])
+                        j += 2; continue
+
+                # "Parcelas:" sozinho → "N x R$ Y" na próxima linha
+                if re.match(r'^parcelas?\s*:$', lj_l):
+                    if j + 1 < len(linhas):
+                        m2 = re.match(r'(\d+)\s*[xX]\s*R\$\s*([\d\.]+,\d{2})', linhas[j + 1])
+                        if m2:
+                            n_parcelas = int(m2.group(1))
+                            parcela    = limpar_moeda(m2.group(2))
+                        j += 2; continue
+
+                # Inline "Entrada: R$ X"
+                m2 = re.search(r'entrada:\s*R\$\s*([\d\.]+,\d{2})', lj, re.IGNORECASE)
+                if m2:
+                    entrada = limpar_moeda(m2.group(1)); j += 1; continue
+
+                # Inline "Parcelas: N x R$ Y"
+                m2 = re.search(r'parcelas?:\s*(\d+)\s*[xX]\s*R\$\s*([\d\.]+,\d{2})', lj, re.IGNORECASE)
+                if m2:
+                    n_parcelas = int(m2.group(1))
+                    parcela    = limpar_moeda(m2.group(2))
+                    j += 1; continue
+
+                # Próximo banco → para
+                if lj.lower() in _BANCOS_IC_LOWER:
+                    break
+
+                j += 1
+
+            if credito > 0 and entrada > 0:
+                saldo = n_parcelas * parcela if n_parcelas > 0 and parcela > 0 \
+                        else max(credito * 1.25 - entrada, credito * 0.20)
+                lista.append({
+                    'ID': id_c, 'Admin': admin, 'Tipo': tipo,
+                    'Crédito': credito, 'Entrada': entrada,
+                    'Parcela': parcela, 'NParcelas': n_parcelas,
+                    'Saldo': saldo, 'CustoTotal': entrada + saldo,
+                    'EntradaPct': entrada / credito,
+                })
+                id_c += 1
+
+            i = j
+            continue
+
+        i += 1
+    return lista
+
+
+# ════════════════════════════════════════════════════════════
+#  PARSER 3 — Genérico (Piffer, WhatsApp, tabela livre)
+# ════════════════════════════════════════════════════════════
+def _extrair_generico(texto: str, tipo_sel: str) -> list:
+    blocos = re.split(
+        r'(?i)(?=\b(?:imóvel|imovel|automóvel|automovel|veículo|veiculo|caminhão|caminhao|moto)\b)',
+        texto
+    )
+    if len(blocos) < 2: blocos = re.split(r'\n\s*\n+', texto)
+    if len(blocos) < 2: blocos = [texto]
 
     lista, id_c = [], 1
     for bloco in blocos:
@@ -272,23 +440,47 @@ def extrair_dados_universal(texto: str, tipo_sel: str) -> list:
             m = _RE_ENTRADA.search(bloco)
             if m: entrada = limpar_moeda(m.group(1))
             if entrada <= 0:
-                cands = sorted([limpar_moeda(v) for v in _RE_MOEDA.findall(bloco) if credito*0.01 < limpar_moeda(v) < credito*0.95], reverse=True)
+                cands = sorted([limpar_moeda(v) for v in _RE_MOEDA.findall(bloco)
+                                if credito * 0.01 < limpar_moeda(v) < credito * 0.95], reverse=True)
                 entrada = cands[0] if cands else 0.0
             if entrada <= 0: continue
-            saldo, parcela = 0.0, 0.0
+            saldo, parcela, n_parcelas = 0.0, 0.0, 0
             for pz_s, vl_s in _RE_PARCELA.findall(bloco):
                 try:
                     pz, vl = int(pz_s), limpar_moeda(vl_s)
                     if pz > 0 and vl > 0:
                         saldo += pz * vl
-                        if pz > 1 and vl > parcela: parcela = vl
+                        if pz > 1 and vl > parcela:
+                            parcela = vl; n_parcelas = pz
                 except Exception: continue
             if saldo <= 0: saldo = max(credito * 1.25 - entrada, credito * 0.20)
-            lista.append({'ID':id_c,'Admin':admin,'Tipo':tipo,'Crédito':credito,'Entrada':entrada,
-                          'Parcela':parcela,'Saldo':saldo,'CustoTotal':entrada+saldo,'EntradaPct':entrada/credito})
+            lista.append({
+                'ID': id_c, 'Admin': admin, 'Tipo': tipo,
+                'Crédito': credito, 'Entrada': entrada,
+                'Parcela': parcela, 'NParcelas': n_parcelas,
+                'Saldo': saldo, 'CustoTotal': entrada + saldo,
+                'EntradaPct': entrada / credito,
+            })
             id_c += 1
         except Exception: continue
     return lista
+
+
+# ════════════════════════════════════════════════════════════
+#  ROTEADOR PRINCIPAL
+# ════════════════════════════════════════════════════════════
+def extrair_dados_universal(texto: str, tipo_sel: str) -> list:
+    if not texto or not texto.strip(): return []
+    texto_limpo = "\n".join(
+        ln.strip() for ln in texto.replace('\r\n','\n').replace('\r','\n').split('\n')
+        if ln.strip()
+    )
+    fmt = _detectar_formato(texto_limpo)
+    if fmt == "icontemplados_detalhe":
+        return _extrair_icontemplados_detalhe(texto_limpo, tipo_sel)
+    if fmt == "icontemplados_cards":
+        return _extrair_icontemplados_cards(texto_limpo, tipo_sel)
+    return _extrair_generico(texto_limpo, tipo_sel)
 
 
 # ════════════════════════════════════════════════════════════
@@ -312,10 +504,8 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                  and c['Entrada'] <= max_ent * TOL
                  and c['Crédito'] <= max_cred]
     if not filtradas: return pd.DataFrame()
-
     por_admin: dict = {}
     for c in filtradas: por_admin.setdefault(c['Admin'], []).append(c)
-
     res, prog, total = [], st.progress(0), len(por_admin)
     for idx, (admin, grupo) in enumerate(por_admin.items()):
         prog.progress(int((idx+1)/total*100))
@@ -339,19 +529,23 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                 cr = (custo_t / soma_c) - 1
                 if cr > max_custo: continue
                 prazo = int(soma_s / soma_p) if soma_p > 0 else 0
+                cet_mensal = (cr / prazo * 100) if prazo > 0 else 0.0
                 res.append({
-                    'STATUS': _status(cr), 'ADMINISTRADORA': admin, 'TIPO': combo[0]['Tipo'],
+                    'STATUS': _status(cr), 'ADMINISTRADORA': admin,
+                    'TIPO': combo[0]['Tipo'],
                     'IDS': " + ".join(str(c['ID']) for c in combo),
                     'CRÉDITO TOTAL': soma_c, 'ENTRADA TOTAL': soma_e,
                     'ENTRADA %': (soma_e/soma_c)*100, 'SALDO DEVEDOR': soma_s,
                     'CUSTO TOTAL': custo_t, 'PRAZO (meses)': prazo,
-                    'PARCELA MENSAL': soma_p, 'CUSTO EFETIVO %': cr*100,
-                    'DETALHES': " || ".join(f"[ID {c['ID']}] {c['Admin']} · {fmt_brl(c['Crédito'])}" for c in combo),
+                    'PARCELA MENSAL': soma_p,
+                    'CET TOTAL %': cr*100, 'CET MENSAL %': cet_mensal,
+                    'DETALHES': " || ".join(
+                        f"[ID {c['ID']}] {c['Admin']} · {fmt_brl(c['Crédito'])}" for c in combo),
                 })
                 cnt += 1
     prog.empty()
     if not res: return pd.DataFrame()
-    return pd.DataFrame(res).sort_values('CUSTO EFETIVO %').reset_index(drop=True)
+    return pd.DataFrame(res).sort_values('CET TOTAL %').reset_index(drop=True)
 
 
 # ════════════════════════════════════════════════════════════
@@ -368,9 +562,40 @@ def gerar_hash(texto, *args):
 
 
 # ════════════════════════════════════════════════════════════
+#  WHATSAPP
+# ════════════════════════════════════════════════════════════
+def gerar_msg_whatsapp(row: dict) -> str:
+    tipo       = str(row.get('TIPO','Imóvel'))
+    admin      = str(row.get('ADMINISTRADORA',''))
+    credito    = float(row.get('CRÉDITO TOTAL', 0))
+    entrada    = float(row.get('ENTRADA TOTAL', 0))
+    parcela    = float(row.get('PARCELA MENSAL', 0))
+    prazo      = int(row.get('PRAZO (meses)', 0))
+    cet_total  = float(row.get('CET TOTAL %', 0))
+    cet_mensal = float(row.get('CET MENSAL %', 0))
+    if "móvel" in tipo.lower() or "movel" in tipo.lower():
+        emoji = "🏠 IMÓVEL"
+    elif "pesado" in tipo.lower() or "caminhao" in tipo.lower():
+        emoji = "🚛 CAMINHÃO"
+    else:
+        emoji = "🚗 AUTO"
+    parc_str = f"{prazo}x {fmt_brl(parcela)}" if prazo > 0 and parcela > 0 else "A consultar"
+    return (
+        f"🔑 CARTA CONTEMPLADA — {admin}\n\n"
+        f"{emoji}\n"
+        f"Crédito: {fmt_brl(credito)}\n"
+        f"Entrada: {fmt_brl(entrada)}\n"
+        f"Parcela: {parc_str}\n\n"
+        f"CET Mensal: {fmt_pct(cet_mensal)} a.m.\n"
+        f"CET Total: {fmt_pct(cet_total)}\n\n"
+        f"Tenho essa cota disponível. Quer mais detalhes?"
+    )
+
+
+# ════════════════════════════════════════════════════════════
 #  PDF
 # ════════════════════════════════════════════════════════════
-def _san(t: str) -> str:
+def _san(t) -> str:
     return str(t).encode('latin-1','replace').decode('latin-1')
 
 class RelatorioPDF(FPDF):
@@ -390,27 +615,28 @@ def gerar_pdf(df: pd.DataFrame) -> bytes:
     pdf.set_auto_page_break(auto=True, margin=14)
     pdf.add_page()
     pdf.set_fill_color(236,236,228); pdf.set_text_color(30,30,30); pdf.set_font('Arial','B',7)
-    cols = ["STS","ADMIN","TIPO","CREDITO","ENTRADA","ENT%","SALDO","CUSTO TOT","PRZ","PARCELA","EFETIVO%","DETALHES"]
-    wids = [18,    20,     14,    28,        28,       10,    28,     28,         8,    24,        13,        70]
+    cols = ["STS","ADMIN","TIPO","CREDITO","ENTRADA","ENT%","SALDO","CUSTO TOT","PRZ","PARCELA","CET TOT","CET MEN","DETALHES"]
+    wids = [16,    18,     12,    26,        26,       8,     26,     26,         7,    22,        11,       11,       47]
     for h,w in zip(cols,wids): pdf.cell(w,7,h,1,0,'C',True)
     pdf.ln(); pdf.set_font('Arial','',6.5)
     for i,(_,row) in enumerate(df.iterrows()):
-        fill = (i%2==0)
+        fill=(i%2==0)
         pdf.set_fill_color(245,245,240) if fill else pdf.set_fill_color(255,255,255)
-        pdf.cell(wids[0],  6, _san(str(row['STATUS']))[:8],           1,0,'C',fill)
-        pdf.cell(wids[1],  6, _san(str(row['ADMINISTRADORA']))[:14],  1,0,'C',fill)
-        pdf.cell(wids[2],  6, _san(str(row['TIPO']))[:10],            1,0,'C',fill)
-        pdf.cell(wids[3],  6, _san(fmt_brl(row['CRÉDITO TOTAL'])),    1,0,'R',fill)
-        pdf.cell(wids[4],  6, _san(fmt_brl(row['ENTRADA TOTAL'])),    1,0,'R',fill)
-        pdf.cell(wids[5],  6, _san(fmt_pct(row['ENTRADA %'])),        1,0,'C',fill)
-        pdf.cell(wids[6],  6, _san(fmt_brl(row['SALDO DEVEDOR'])),    1,0,'R',fill)
-        pdf.cell(wids[7],  6, _san(fmt_brl(row['CUSTO TOTAL'])),      1,0,'R',fill)
-        pdf.cell(wids[8],  6, str(int(row['PRAZO (meses)'])),         1,0,'C',fill)
-        pdf.cell(wids[9],  6, _san(fmt_brl(row['PARCELA MENSAL'])),   1,0,'R',fill)
-        pdf.cell(wids[10], 6, _san(fmt_pct(row['CUSTO EFETIVO %'])),  1,0,'C',fill)
-        pdf.cell(wids[11], 6, _san(str(row['DETALHES']))[:55],        1,1,'L',fill)
+        pdf.cell(wids[0],  6, _san(str(row['STATUS']))[:6],          1,0,'C',fill)
+        pdf.cell(wids[1],  6, _san(str(row['ADMINISTRADORA']))[:12], 1,0,'C',fill)
+        pdf.cell(wids[2],  6, _san(str(row['TIPO']))[:8],            1,0,'C',fill)
+        pdf.cell(wids[3],  6, _san(fmt_brl(row['CRÉDITO TOTAL'])),   1,0,'R',fill)
+        pdf.cell(wids[4],  6, _san(fmt_brl(row['ENTRADA TOTAL'])),   1,0,'R',fill)
+        pdf.cell(wids[5],  6, _san(fmt_pct_curto(row['ENTRADA %'])), 1,0,'C',fill)
+        pdf.cell(wids[6],  6, _san(fmt_brl(row['SALDO DEVEDOR'])),   1,0,'R',fill)
+        pdf.cell(wids[7],  6, _san(fmt_brl(row['CUSTO TOTAL'])),     1,0,'R',fill)
+        pdf.cell(wids[8],  6, str(int(row['PRAZO (meses)'])),        1,0,'C',fill)
+        pdf.cell(wids[9],  6, _san(fmt_brl(row['PARCELA MENSAL'])),  1,0,'R',fill)
+        pdf.cell(wids[10], 6, _san(fmt_pct(row['CET TOTAL %'])),     1,0,'C',fill)
+        pdf.cell(wids[11], 6, _san(fmt_pct(row['CET MENSAL %'])),    1,0,'C',fill)
+        pdf.cell(wids[12], 6, _san(str(row['DETALHES']))[:42],       1,1,'L',fill)
     out = pdf.output(dest='S')
-    return out if isinstance(out, bytes) else out.encode('latin-1')
+    return bytes(out) if isinstance(out,(bytes,bytearray)) else out.encode('latin-1')
 
 
 # ════════════════════════════════════════════════════════════
@@ -423,87 +649,75 @@ def gerar_excel(df: pd.DataFrame, cotas: list) -> bytes:
     FMT_BRL = '_-"R$"* #.##0,00_-;-"R$"* #.##0,00_-;_-"R$"* "-"??_-;_-@_-'
     FMT_PCT = '0,00"%"'
     FMT_NUM = '#.##0'
-    borda = Border(left=Side(style='thin',color='CCCCCC'),
-                   right=Side(style='thin',color='CCCCCC'),
-                   top=Side(style='thin',color='CCCCCC'),
-                   bottom=Side(style='thin',color='CCCCCC'))
+    borda = Border(left=Side(style='thin',color='CCCCCC'), right=Side(style='thin',color='CCCCCC'),
+                   top=Side(style='thin',color='CCCCCC'),  bottom=Side(style='thin',color='CCCCCC'))
     col_names = list(df.columns)
-    col_widths = {'STATUS':18,'ADMINISTRADORA':16,'TIPO':12,'IDS':24,
-                  'CRÉDITO TOTAL':22,'ENTRADA TOTAL':22,'ENTRADA %':13,
-                  'SALDO DEVEDOR':22,'CUSTO TOTAL':22,'PRAZO (meses)':14,
-                  'PARCELA MENSAL':22,'CUSTO EFETIVO %':17,'DETALHES':55}
+    col_widths = {
+        'STATUS':18,'ADMINISTRADORA':16,'TIPO':12,'IDS':24,
+        'CRÉDITO TOTAL':22,'ENTRADA TOTAL':22,'ENTRADA %':12,
+        'SALDO DEVEDOR':22,'CUSTO TOTAL':22,'PRAZO (meses)':14,
+        'PARCELA MENSAL':22,'CET TOTAL %':14,'CET MENSAL %':14,'DETALHES':55,
+    }
     fmt_map = {}
     for i,col in enumerate(col_names, start=1):
-        if col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'): fmt_map[i] = FMT_BRL
-        elif col in ('ENTRADA %','CUSTO EFETIVO %'): fmt_map[i] = FMT_PCT
-        elif col == 'PRAZO (meses)': fmt_map[i] = FMT_NUM
-
+        if col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'): fmt_map[i]=FMT_BRL
+        elif col in ('ENTRADA %','CET TOTAL %','CET MENSAL %'): fmt_map[i]=FMT_PCT
+        elif col=='PRAZO (meses)': fmt_map[i]=FMT_NUM
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Oportunidades')
         ws = writer.sheets['Oportunidades']
         for cell in ws[1]:
-            cell.fill = PatternFill("solid", fgColor=GOLD_HEX)
-            cell.font = Font(bold=True, color="FFFFFF", size=10)
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-            cell.border = borda
-            cn = col_names[cell.column-1]
-            ws.column_dimensions[get_column_letter(cell.column)].width = col_widths.get(cn, 14)
-        ws.row_dimensions[1].height = 22
-        for ri, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-            zebra = (ri % 2 == 0)
+            cell.fill=PatternFill("solid",fgColor=GOLD_HEX); cell.font=Font(bold=True,color="FFFFFF",size=10)
+            cell.alignment=Alignment(horizontal='center',vertical='center'); cell.border=borda
+            ws.column_dimensions[get_column_letter(cell.column)].width=col_widths.get(col_names[cell.column-1],14)
+        ws.row_dimensions[1].height=22
+        for ri,row in enumerate(ws.iter_rows(min_row=2,max_row=ws.max_row),start=2):
+            z=(ri%2==0)
             for cell in row:
-                cell.border = borda
-                cell.font = Font(size=9)
-                if zebra: cell.fill = PatternFill("solid", fgColor=ZEBRA)
-                ci = cell.column
-                cn = col_names[ci-1]
+                cell.border=borda; cell.font=Font(size=9)
+                if z: cell.fill=PatternFill("solid",fgColor=ZEBRA)
+                ci=cell.column; cn=col_names[ci-1]
                 if ci in fmt_map:
-                    cell.number_format = fmt_map[ci]
-                    try: cell.value = float(cell.value) if cell.value not in (None,'') else cell.value
-                    except (ValueError,TypeError): pass
-                    cell.alignment = Alignment(horizontal='right', vertical='center')
-                elif cn in ('DETALHES','IDS'):
-                    cell.alignment = Alignment(horizontal='left', vertical='center')
-                else:
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-        ws.freeze_panes = 'A2'
-        ws.auto_filter.ref = ws.dimensions
-
+                    cell.number_format=fmt_map[ci]
+                    try: cell.value=float(cell.value) if cell.value not in (None,'') else cell.value
+                    except: pass
+                    cell.alignment=Alignment(horizontal='right',vertical='center')
+                elif cn in ('DETALHES','IDS'): cell.alignment=Alignment(horizontal='left',vertical='center')
+                else: cell.alignment=Alignment(horizontal='center',vertical='center')
+        ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
         if cotas:
-            df_c = pd.DataFrame(cotas)
-            df_c.to_excel(writer, index=False, sheet_name='Cotas Lidas')
-            ws2 = writer.sheets['Cotas Lidas']
-            cw = {'ID':6,'Admin':16,'Tipo':12,'Crédito':22,'Entrada':22,'Parcela':22,'Saldo':22,'CustoTotal':22,'EntradaPct':14}
-            cf = {'Crédito':FMT_BRL,'Entrada':FMT_BRL,'Parcela':FMT_BRL,'Saldo':FMT_BRL,'CustoTotal':FMT_BRL,'EntradaPct':FMT_PCT}
-            cc = list(df_c.columns)
+            df_c=pd.DataFrame(cotas).drop(columns=['NParcelas'],errors='ignore')
+            df_c.to_excel(writer,index=False,sheet_name='Cotas Lidas')
+            ws2=writer.sheets['Cotas Lidas']
+            cw={'ID':6,'Admin':16,'Tipo':12,'Crédito':22,'Entrada':22,'Parcela':22,'Saldo':22,'CustoTotal':22,'EntradaPct':14}
+            cf={'Crédito':FMT_BRL,'Entrada':FMT_BRL,'Parcela':FMT_BRL,'Saldo':FMT_BRL,'CustoTotal':FMT_BRL,'EntradaPct':FMT_PCT}
+            cc=list(df_c.columns)
             for cell in ws2[1]:
-                cell.fill = PatternFill("solid", fgColor=GOLD_HEX)
-                cell.font = Font(bold=True, color="FFFFFF", size=10)
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                cell.border = borda
-                ws2.column_dimensions[get_column_letter(cell.column)].width = cw.get(cc[cell.column-1], 14)
-            for ri, row in enumerate(ws2.iter_rows(min_row=2, max_row=ws2.max_row), start=2):
-                zebra = (ri%2==0)
+                cell.fill=PatternFill("solid",fgColor=GOLD_HEX); cell.font=Font(bold=True,color="FFFFFF",size=10)
+                cell.alignment=Alignment(horizontal='center',vertical='center'); cell.border=borda
+                ws2.column_dimensions[get_column_letter(cell.column)].width=cw.get(cc[cell.column-1],14)
+            for ri,row in enumerate(ws2.iter_rows(min_row=2,max_row=ws2.max_row),start=2):
                 for cell in row:
-                    cell.border = borda; cell.font = Font(size=9)
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    if zebra: cell.fill = PatternFill("solid", fgColor=ZEBRA)
-                    cn = cc[cell.column-1]
+                    cell.border=borda; cell.font=Font(size=9)
+                    cell.alignment=Alignment(horizontal='center',vertical='center')
+                    if ri%2==0: cell.fill=PatternFill("solid",fgColor=ZEBRA)
+                    cn=cc[cell.column-1]
                     if cn in cf:
-                        cell.number_format = cf[cn]
-                        try: cell.value = float(cell.value) if cell.value not in (None,'') else cell.value
-                        except (ValueError,TypeError): pass
-                        cell.alignment = Alignment(horizontal='right', vertical='center')
-            ws2.freeze_panes = 'A2'
+                        cell.number_format=cf[cn]
+                        try: cell.value=float(cell.value) if cell.value not in (None,'') else cell.value
+                        except: pass
+                        cell.alignment=Alignment(horizontal='right',vertical='center')
+            ws2.freeze_panes='A2'
     return buf.getvalue()
 
 
 # ════════════════════════════════════════════════════════════
 #  SESSION STATE
 # ════════════════════════════════════════════════════════════
-for k,v in [('df_resultado',None),('admins_disponiveis',["Todas"]),('cotas_lidas',[])]:
-    if k not in st.session_state: st.session_state[k] = v
+for k,v in [('df_resultado',None),('admins_disponiveis',["Todas"]),
+            ('cotas_lidas',[]),('msg_whatsapp',"")]:
+    if k not in st.session_state: st.session_state[k]=v
 
 
 # ════════════════════════════════════════════════════════════
@@ -511,11 +725,12 @@ for k,v in [('df_resultado',None),('admins_disponiveis',["Todas"]),('cotas_lidas
 # ════════════════════════════════════════════════════════════
 with st.expander("📋  DADOS DO SITE  —  Cole o texto das cotas aqui", expanded=True):
     texto_site = st.text_area("Texto copiado do portal / WhatsApp", height=130,
-                               placeholder="Cole aqui o texto com as cotas de consórcio...", key="input_texto")
+                              placeholder="Cole aqui o texto com as cotas de consórcio...", key="input_texto")
     if texto_site:
         prev = extrair_dados_universal(texto_site, "Todos")
         st.session_state.cotas_lidas = prev
-        st.session_state.admins_disponiveis = ["Todas"] + sorted(set(c['Admin'] for c in prev if c['Admin']!="OUTROS"))
+        st.session_state.admins_disponiveis = ["Todas"] + sorted(
+            set(c['Admin'] for c in prev if c['Admin'] != "OUTROS"))
         if prev:
             tp = {}
             for c in prev: tp[c['Tipo']] = tp.get(c['Tipo'],0)+1
@@ -543,7 +758,7 @@ max_k = r2c3.slider("Custo efetivo máximo (%)", 0.0, 100.0, 55.0, 0.5, format="
 max_k_dec = max_k / 100.0
 st.markdown("")
 
-cb, ci = st.columns([2,3])
+cb,ci = st.columns([2,3])
 with cb: buscar = st.button("🔍  LOCALIZAR OPORTUNIDADES", type="primary")
 with ci:
     if st.session_state.cotas_lidas:
@@ -560,56 +775,81 @@ if buscar:
             _h = gerar_hash(texto_site, min_c, max_c, max_e, max_p, max_k_dec, tipo_bem, admin_filtro)
             df = buscar_cached(_h, texto_site, min_c, max_c, max_e, max_p, max_k_dec, tipo_bem, admin_filtro)
         st.session_state.df_resultado = df
+        st.session_state.msg_whatsapp = ""
 
 
 # ════════════════════════════════════════════════════════════
-#  RESULTADOS + DOWNLOADS
+#  RESULTADOS
 # ════════════════════════════════════════════════════════════
 if st.session_state.df_resultado is not None:
     df_show = st.session_state.df_resultado
-
     if df_show.empty:
         st.warning("🔎  Nenhuma combinação encontrada. Tente ampliar os filtros.")
     else:
         st.markdown(f"<h3 style='margin-top:24px'>📊 RESULTADO DA ANÁLISE</h3>", unsafe_allow_html=True)
         m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("Oportunidades",    str(len(df_show)))
-        m2.metric("Menor custo",      fmt_pct(df_show['CUSTO EFETIVO %'].min()))
-        m3.metric("Menor entrada",    fmt_brl(df_show['ENTRADA TOTAL'].min()))
-        m4.metric("Maior crédito",    fmt_brl(df_show['CRÉDITO TOTAL'].max()))
+        m1.metric("Oportunidades",     str(len(df_show)))
+        m2.metric("Menor CET",         fmt_pct(df_show['CET TOTAL %'].min()))
+        m3.metric("Menor entrada",     fmt_brl(df_show['ENTRADA TOTAL'].min()))
+        m4.metric("Maior crédito",     fmt_brl(df_show['CRÉDITO TOTAL'].max()))
         m5.metric("💎 Ouro/Imperdível", str(len(df_show[df_show['STATUS'].str.contains("OURO|IMPERDÍVEL")])))
         st.markdown("")
 
         df_exib = df_show.copy()
         for col in ('CRÉDITO TOTAL','ENTRADA TOTAL','SALDO DEVEDOR','CUSTO TOTAL','PARCELA MENSAL'):
             df_exib[col] = df_exib[col].apply(fmt_brl)
-        for col in ('ENTRADA %','CUSTO EFETIVO %'):
-            df_exib[col] = df_exib[col].apply(fmt_pct)
+        df_exib['ENTRADA %']    = df_exib['ENTRADA %'].apply(fmt_pct_curto)
+        df_exib['CET TOTAL %']  = df_exib['CET TOTAL %'].apply(fmt_pct)
+        df_exib['CET MENSAL %'] = df_exib['CET MENSAL %'].apply(fmt_pct)
 
         cols_tab = [c for c in df_exib.columns if c != 'DETALHES']
-        st.dataframe(df_exib[cols_tab], hide_index=True, use_container_width=True, height=420)
+        st.dataframe(df_exib[cols_tab], hide_index=True, use_container_width=True, height=400)
 
         with st.expander("🔎  Ver detalhes das combinações"):
-            st.dataframe(df_exib[['STATUS','ADMINISTRADORA','IDS','CUSTO EFETIVO %','DETALHES']],
+            st.dataframe(df_exib[['STATUS','ADMINISTRADORA','IDS','CET TOTAL %','DETALHES']],
                          hide_index=True, use_container_width=True)
 
         if st.session_state.cotas_lidas:
             with st.expander("📋  Ver cotas lidas individualmente"):
-                df_c = pd.DataFrame(st.session_state.cotas_lidas).copy()
+                df_c = pd.DataFrame(st.session_state.cotas_lidas).drop(columns=['NParcelas'],errors='ignore').copy()
                 for col in ('Crédito','Entrada','Parcela','Saldo','CustoTotal'):
                     df_c[col] = df_c[col].apply(fmt_brl)
                 df_c['EntradaPct'] = df_c['EntradaPct'].apply(fmt_pct)
                 st.dataframe(df_c, hide_index=True, use_container_width=True)
 
-        st.markdown(f"<h3 style='margin-top:20px'>⬇️ EXPORTAR</h3>", unsafe_allow_html=True)
-        dl1, dl2, dl3 = st.columns(3)
+        # WHATSAPP
+        st.markdown(f"<h3 style='margin-top:28px'>📲 GERAR MENSAGEM WHATSAPP</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:{BEIGE};opacity:.55;font-size:.83rem;margin-bottom:10px'>Clique em uma linha para selecionar, depois clique em GERAR MENSAGEM.</p>", unsafe_allow_html=True)
+        cols_sel = ['STATUS','ADMINISTRADORA','TIPO','IDS','CRÉDITO TOTAL','ENTRADA TOTAL','PARCELA MENSAL','CET TOTAL %','CET MENSAL %']
+        df_sel = df_exib[[c for c in cols_sel if c in df_exib.columns]].copy()
+        df_sel.insert(0,'Nº', range(1, len(df_sel)+1))
+        sel = st.dataframe(df_sel, hide_index=True, use_container_width=True, height=260,
+                           on_select="rerun", selection_mode="single-row")
+        linha_sel = None
+        if sel and hasattr(sel,'selection') and sel.selection and sel.selection.get('rows'):
+            linha_sel = sel.selection['rows'][0]
+        col_btn_w, col_info_w = st.columns([2,3])
+        with col_btn_w:
+            gerar_msg = st.button("📲  GERAR MENSAGEM", type="primary")
+        with col_info_w:
+            if linha_sel is not None:
+                rp = df_show.iloc[linha_sel]
+                st.markdown(f"<p style='color:{GOLD};font-size:.85rem;margin-top:10px'>✅ Linha {linha_sel+1} — {rp['ADMINISTRADORA']} · {fmt_brl(rp['CRÉDITO TOTAL'])}</p>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<p style='color:{BEIGE};opacity:.35;font-size:.85rem;margin-top:10px'>Nenhuma linha selecionada</p>", unsafe_allow_html=True)
+        if gerar_msg:
+            if linha_sel is None:
+                st.warning("⚠️  Selecione uma linha antes de gerar.")
+            else:
+                st.session_state.msg_whatsapp = gerar_msg_whatsapp(df_show.iloc[linha_sel].to_dict())
+        if st.session_state.msg_whatsapp:
+            st.markdown(f"<p style='color:{GOLD};font-weight:600;margin-top:16px'>📋 Copie abaixo e cole no WhatsApp:</p>", unsafe_allow_html=True)
+            st.code(st.session_state.msg_whatsapp, language=None)
+
+        # DOWNLOADS
+        st.markdown(f"<h3 style='margin-top:28px'>⬇️ EXPORTAR</h3>", unsafe_allow_html=True)
+        dl2, dl3 = st.columns(2)
         ts = datetime.now().strftime('%Y%m%d_%H%M')
-
-        csv_b = df_show.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-        dl1.download_button("📄  Baixar CSV", data=csv_b,
-                            file_name=f"sniper_{ts}.csv", mime="text/csv",
-                            use_container_width=True)
-
         try:
             xl_b = gerar_excel(df_show, st.session_state.cotas_lidas)
             dl2.download_button("📊  Baixar Excel", data=xl_b,
@@ -618,7 +858,6 @@ if st.session_state.df_resultado is not None:
                                 use_container_width=True)
         except Exception as ex:
             dl2.error(f"Excel: {ex}")
-
         try:
             pdf_b = gerar_pdf(df_show.head(200))
             dl3.download_button("📑  Baixar PDF", data=pdf_b,
