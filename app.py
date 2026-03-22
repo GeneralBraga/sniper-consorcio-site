@@ -186,7 +186,7 @@ _BANCOS_IC = [
 _BANCOS_IC_LOWER = {b.lower() for b in _BANCOS_IC}
 
 _IGNORAR_IC = {
-    'selecionar','detalhes','reservada','negociar','disponível','disponivel',
+    'selecionar','detalhes',
     'código:','codigo:','directions_car','directions_home','directions_bus',
     'warning','info','check_circle','error',
     'baixar pdf','baixar excel','selecionar todas','criar filtro',
@@ -195,6 +195,8 @@ _IGNORAR_IC = {
     'cartas contempladas para veículo','cartas contempladas para veiculo',
     'cartas contempladas para imovel','cartas contempladas para imóvel',
     'imóvel','imovel','veículo','veiculo',
+    # NOTA: 'reservada','negociar','disponível' NAO estão aqui —
+    # precisam chegar ao parser para detectar status da cota
 }
 
 _RE_CREDITO = re.compile(r'(?:cr[eé]dito|bem|valor[\s_]do[\s_]bem|valor[\s_]carta)[^\d\n]{0,25}?R\$\s*([\d\.,]+)', re.IGNORECASE)
@@ -350,11 +352,19 @@ def _extrair_icontemplados_cards(texto: str, tipo_sel: str) -> list:
 
             entrada = parcela = 0.0
             n_parcelas = 0
+            disponivel = True  # assume disponível até achar "Reservada"
             j = i + 2
 
-            while j < min(i + 14, len(linhas)):
+            while j < min(i + 16, len(linhas)):
                 lj   = linhas[j]
                 lj_l = lj.lower()
+
+                # Status da cota
+                if lj_l == 'reservada':
+                    disponivel = False
+                    j += 1; continue
+                if lj_l in ('negociar', 'disponível', 'disponivel'):
+                    j += 1; continue
 
                 # "Entrada:" sozinho → valor na próxima linha
                 if lj_l == 'entrada:':
@@ -393,9 +403,7 @@ def _extrair_icontemplados_cards(texto: str, tipo_sel: str) -> list:
                 saldo = n_parcelas * parcela if n_parcelas > 0 and parcela > 0 \
                         else max(credito * 1.25 - entrada, credito * 0.20)
 
-                # Verifica se aparece "Reservada" nas linhas do bloco dessa cota
-                bloco_cota = " ".join(linhas[i:min(j+3, len(linhas))]).lower()
-                disponivel = "reservada" not in bloco_cota
+                # Disponivel já foi setado dentro do loop acima
 
                 lista.append({
                     'ID': id_c, 'Admin': admin, 'Tipo': tipo,
