@@ -392,12 +392,18 @@ def _extrair_icontemplados_cards(texto: str, tipo_sel: str) -> list:
             if credito > 0 and entrada > 0:
                 saldo = n_parcelas * parcela if n_parcelas > 0 and parcela > 0 \
                         else max(credito * 1.25 - entrada, credito * 0.20)
+
+                # Verifica se aparece "Reservada" nas linhas do bloco dessa cota
+                bloco_cota = " ".join(linhas[i:min(j+3, len(linhas))]).lower()
+                disponivel = "reservada" not in bloco_cota
+
                 lista.append({
                     'ID': id_c, 'Admin': admin, 'Tipo': tipo,
                     'Crédito': credito, 'Entrada': entrada,
                     'Parcela': parcela, 'NParcelas': n_parcelas,
                     'Saldo': saldo, 'CustoTotal': entrada + saldo,
                     'EntradaPct': entrada / credito,
+                    'Disponivel': disponivel,
                 })
                 id_c += 1
 
@@ -502,7 +508,8 @@ def processar_combinacoes(cotas, min_cred, max_cred, max_ent, max_parc, max_cust
                  and (admin_f == "Todas" or c['Admin'] == admin_f)
                  and c['Admin'] != "OUTROS"
                  and c['Entrada'] <= max_ent * TOL
-                 and c['Crédito'] <= max_cred]
+                 and c['Crédito'] <= max_cred
+                 and c.get('Disponivel', True)]  # exclui cotas Reservadas
     if not filtradas: return pd.DataFrame()
     por_admin: dict = {}
     for c in filtradas: por_admin.setdefault(c['Admin'], []).append(c)
@@ -573,22 +580,41 @@ def gerar_msg_whatsapp(row: dict) -> str:
     prazo      = int(row.get('PRAZO (meses)', 0))
     cet_total  = float(row.get('CET TOTAL %', 0))
     cet_mensal = float(row.get('CET MENSAL %', 0))
+    ids        = str(row.get('IDS', ''))
+
     if "móvel" in tipo.lower() or "movel" in tipo.lower():
-        emoji = "🏠 IMÓVEL"
+        emoji_tipo = "🏠 *IMÓVEL*"
     elif "pesado" in tipo.lower() or "caminhao" in tipo.lower():
-        emoji = "🚛 CAMINHÃO"
+        emoji_tipo = "🚛 *CAMINHÃO*"
     else:
-        emoji = "🚗 AUTO"
+        emoji_tipo = "🚗 *AUTO*"
+
     parc_str = f"{prazo}x {fmt_brl(parcela)}" if prazo > 0 and parcela > 0 else "A consultar"
+
+    # Quantidade de cotas na junção (ex: "1 + 56" → 2 cotas)
+    n_cotas = len(ids.split('+')) if ids else 1
+
+    # Taxa de transferência: Itaú = R$ 650 por cota | demais = 1% do crédito total
+    admin_upper = admin.upper()
+    if 'ITAÚ' in admin_upper or 'ITAU' in admin_upper:
+        tx_transf = 650.0 * n_cotas
+    else:
+        tx_transf = credito * 0.01
+
     return (
-        f"🔑 CARTA CONTEMPLADA — {admin}\n\n"
-        f"{emoji}\n"
-        f"Crédito: {fmt_brl(credito)}\n"
-        f"Entrada: {fmt_brl(entrada)}\n"
-        f"Parcela: {parc_str}\n\n"
-        f"CET Mensal: {fmt_pct(cet_mensal)} a.m.\n"
-        f"CET Total: {fmt_pct(cet_total)}\n\n"
-        f"Tenho essa cota disponível. Quer mais detalhes?"
+        f"🔑 *CARTA CONTEMPLADA — {admin}*\n"
+        f"\n"
+        f"{emoji_tipo}\n"
+        f"*Crédito:* {fmt_brl(credito)}\n"
+        f"*Entrada:* {fmt_brl(entrada)}\n"
+        f"*Parcela:* {parc_str}\n"
+        f"*Tx de Transferência:* {fmt_brl(tx_transf)}\n"
+        f"\n"
+        f"*CET Mensal:* {fmt_pct(cet_mensal)} a.m.\n"
+        f"*CET Total:* {fmt_pct(cet_total)}\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🏆 *JBS Contempladas*"
     )
 
 
@@ -734,7 +760,11 @@ with st.expander("📋  DADOS DO SITE  —  Cole o texto das cotas aqui", expand
         if prev:
             tp = {}
             for c in prev: tp[c['Tipo']] = tp.get(c['Tipo'],0)+1
-            st.success(f"✅  **{len(prev)} cotas lidas** — {' · '.join(f'{v} {k}' for k,v in sorted(tp.items()))}")
+            disponiveis = sum(1 for c in prev if c.get('Disponivel', True))
+            reservadas  = len(prev) - disponiveis
+            resumo = ' · '.join(f'{v} {k}' for k,v in sorted(tp.items()))
+            aviso_res = f" _(⚠️ {reservadas} reservadas excluídas)_" if reservadas > 0 else ""
+            st.success(f"✅  **{disponiveis} cotas disponíveis** de {len(prev)} lidas — {resumo}{aviso_res}")
         else:
             st.warning("⚠️  Nenhuma cota identificada.")
     else:
