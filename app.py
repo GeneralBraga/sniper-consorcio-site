@@ -981,7 +981,9 @@ def gerar_pdf_contemplada(
     pdf.cell(186, 4, _s("Valores sujeitos a confirmacao. Consulte disponibilidade com nossa equipe antes de qualquer decisao."), 0, 1, 'C')
 
     out = pdf.output(dest='S')
-    return out if isinstance(out, bytes) else out.encode('latin-1')
+    if isinstance(out, (bytes, bytearray)):
+        return bytes(out)
+    return out.encode('latin-1')
 
 
 # ════════════════════════════════════════════════════════════
@@ -1180,7 +1182,7 @@ with tab_contemplada:
     with cc2:
         st.markdown(f"<p style='color:{GOLD};font-size:.78rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-top:8px'>Taxa de transferência</p>", unsafe_allow_html=True)
         tx_opcao = st.radio("Cálculo da taxa",
-                            ["Auto (1% do crédito)","Itaú (R$ 650)","Manual"],
+                            ["1% do crédito","Itaú (R$ 650)","Manual"],
                             key="ct_tx_opcao", label_visibility="collapsed")
         if tx_opcao == "Manual":
             ct_tx = st.number_input("Valor da taxa (R$)", 0.0, step=100.0, value=0.0,
@@ -1190,7 +1192,7 @@ with tab_contemplada:
             st.info("Taxa Itaú: R$ 650,00")
         else:
             ct_tx = ct_credito * 0.01
-            st.info(f"Taxa automática (1%): {fmt_brl(ct_tx)}")
+            st.info(f"Taxa (1%): {fmt_brl(ct_tx)}")
 
         if ct_credito > 0 and ct_entrada > 0:
             saldo_prev = ct_n_parcelas * ct_parcela
