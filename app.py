@@ -771,214 +771,270 @@ def gerar_pdf_contemplada(
     credito: float, entrada: float, n_parcelas: int, parcela: float,
     tx_transf: float
 ) -> bytes:
-    """
-    Gera PDF premium de apresentação de cota contemplada individual.
-    Layout: capa com dados financeiros + página CTA de fechamento.
-    """
-    saldo_devedor = n_parcelas * parcela
-    custo_total   = entrada + saldo_devedor + tx_transf
-    cet_total_pct = ((custo_total / credito) - 1) * 100 if credito > 0 else 0
+    """PDF premium — Carta Contemplada Individual. Layout página única A4."""
+
+    # ── Cálculos financeiros ──────────────────────────────
+    saldo_devedor  = n_parcelas * parcela
+    custo_total    = entrada + saldo_devedor + tx_transf
+    cet_total_pct  = ((custo_total / credito) - 1) * 100 if credito > 0 else 0
     cet_mensal_pct = cet_total_pct / n_parcelas if n_parcelas > 0 else 0
+    economia_pct   = (entrada / credito) * 100 if credito > 0 else 0
 
-    if "vel" in tipo.lower() or "auto" in tipo.lower():
-        tipo_label = "AUTOMOVEL"
-        tipo_emoji_txt = "Veiculo / Automovel"
-    elif "movel" in tipo.lower() or "vel" in tipo.lower():
-        tipo_label = "IMOVEL"
-        tipo_emoji_txt = "Imovel / Bem de Raiz"
-    elif "pesado" in tipo.lower() or "caminhao" in tipo.lower():
-        tipo_label = "PESADOS"
-        tipo_emoji_txt = "Caminhao / Pesados"
+    # ── Tipo de bem com texto correto ────────────────────
+    tl = tipo.lower()
+    if any(k in tl for k in ('imovel','imóvel','apart','casa','terreno')):
+        tipo_tag  = "IMOVEL"
+        tipo_desc = "Imovel / Bem de Raiz"
+        uso_txt   = "aquisicao do seu imovel"
+        uso_txt2  = "imovel — pronto para uso imediato"
+    elif any(k in tl for k in ('pesado','caminhao','caminhão','onibus','ônibus')):
+        tipo_tag  = "PESADOS"
+        tipo_desc = "Veiculos Pesados / Caminhao"
+        uso_txt   = "aquisicao do seu veiculo pesado"
+        uso_txt2  = "veiculo pesado — pronto para uso imediato"
     else:
-        tipo_label = tipo.upper()
-        tipo_emoji_txt = tipo
+        tipo_tag  = "AUTOMOVEL"
+        tipo_desc = "Veiculo / Automovel"
+        uso_txt   = "aquisicao do seu automovel"
+        uso_txt2  = "automovel — pronto para uso imediato"
 
-    GOLD_R, GOLD_G, GOLD_B   = 132, 117, 78
-    DARK_R, DARK_G, DARK_B   = 14,  17,  23
-    WHITE_R, WHITE_G, WHITE_B = 255, 255, 255
-    LGRAY_R, LGRAY_G, LGRAY_B = 245, 244, 238
-    GREEN_R, GREEN_G, GREEN_B = 39, 174, 96
+    # ── Nome do cliente ──────────────────────────────────
+    cliente_label = nome_cliente.strip().upper() if nome_cliente.strip() else "CLIENTE"
 
-    def _s(t): return str(t).encode('latin-1','replace').decode('latin-1')
+    # ── Paleta ──────────────────────────────────────────
+    GR, GG, GB    = 132, 117, 78    # ouro
+    DR, DG, DB    = 12,  14,  20    # escuro quase preto (mais rico)
+    WR, WG, WB    = 255, 255, 255   # branco
+    LR, LG, LB    = 248, 247, 242   # creme claro
+    SR, SG, SB    = 230, 225, 205   # dourado claro (subtítulos)
+    MR, MG, MB    = 50,  46,  35    # texto médio escuro
+
+    def _s(t): return str(t).encode('latin-1', 'replace').decode('latin-1')
+    def _line(x, y, w, h, r=None, g=None, b=None):
+        if r is not None: pdf.set_fill_color(r, g, b)
+        pdf.rect(x, y, w, h, 'F')
 
     pdf = FPDF(orientation='P', unit='mm', format='A4')
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
 
-    # ── Fundo escuro topo ──────────────────────────────────
-    pdf.set_fill_color(DARK_R, DARK_G, DARK_B)
-    pdf.rect(0, 0, 210, 68, 'F')
+    # ════════════════════════════════════════════════════
+    #  CABEÇALHO — fundo escuro full-width, altura 72mm
+    # ════════════════════════════════════════════════════
+    _line(0, 0, 210, 72, DR, DG, DB)
 
-    # ── Logo área ──────────────────────────────────────────
+    # Faixa lateral dourada (acento vertical)
+    _line(0, 0, 5, 72, GR, GG, GB)
+
+    # Logo — sem fundo (usa transparência nativa do PNG)
     if os.path.exists("logo_pdf.png"):
-        pdf.image("logo_pdf.png", 12, 8, 36)
+        pdf.image("logo_pdf.png", 14, 9, 32)
 
-    # ── Título principal ───────────────────────────────────
-    pdf.set_text_color(GOLD_R, GOLD_G, GOLD_B)
-    pdf.set_font('Arial', 'B', 26)
-    pdf.set_xy(55, 12)
-    pdf.cell(0, 10, _s("CARTA CONTEMPLADA"), 0, 1, 'L')
+    # Título
+    pdf.set_font('Arial', 'B', 28)
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(52, 10)
+    pdf.cell(0, 11, _s("CARTA CONTEMPLADA"), 0, 1, 'L')
 
-    pdf.set_font('Arial', '', 11)
-    pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
-    pdf.set_xy(55, 24)
-    pdf.cell(0, 6, _s(f"Administradora: {admin.upper()}"), 0, 1, 'L')
+    # Subtítulo admin
+    pdf.set_font('Arial', '', 10)
+    pdf.set_text_color(SR, SG, SB)
+    pdf.set_xy(52, 22)
+    pdf.cell(0, 5, _s(f"Administradora: {admin.upper()}"), 0, 1, 'L')
 
-    pdf.set_font('Arial', 'B', 11)
-    pdf.set_text_color(GOLD_R, GOLD_G, GOLD_B)
-    pdf.set_xy(55, 31)
-    pdf.cell(0, 6, _s(tipo_emoji_txt.upper()), 0, 1, 'L')
+    # Tipo de bem — badge dourado
+    _line(52, 29, 60, 8, GR, GG, GB)
+    pdf.set_font('Arial', 'B', 8)
+    pdf.set_text_color(DR, DG, DB)
+    pdf.set_xy(53, 30.5)
+    pdf.cell(58, 5, _s(tipo_desc.upper()), 0, 0, 'C')
 
-    # ── Data ──────────────────────────────────────────────
-    pdf.set_font('Arial', '', 8)
-    pdf.set_text_color(180, 170, 130)
-    pdf.set_xy(55, 38)
-    pdf.cell(0, 5, _s(f"Emitido em {datetime.now().strftime('%d/%m/%Y  |  Validade: consultar disponibilidade')}"), 0, 1, 'L')
+    # Data de emissão
+    pdf.set_font('Arial', '', 7.5)
+    pdf.set_text_color(130, 118, 80)
+    pdf.set_xy(52, 40)
+    pdf.cell(0, 5, _s(f"Emitido em {datetime.now().strftime('%d/%m/%Y')}   |   Validade: consultar disponibilidade"), 0, 1, 'L')
 
-    # ── Nome cliente ──────────────────────────────────────
-    if nome_cliente.strip():
-        pdf.set_fill_color(GOLD_R, GOLD_G, GOLD_B)
-        pdf.rect(55, 46, 143, 14, 'F')
-        pdf.set_font('Arial', 'B', 12)
-        pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
-        pdf.set_xy(58, 49)
-        pdf.cell(0, 7, _s(f"Preparado para: {nome_cliente.upper()}"), 0, 1, 'L')
+    # ── Banner "Cliente" — dourado escuro premium ───────
+    _line(10, 50, 190, 16, 55, 48, 30)       # fundo ouro escuro
+    _line(10, 50, 3,   16, GR, GG, GB)        # acento lateral
+    pdf.set_font('Arial', '', 7.5)
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(17, 52.5)
+    pdf.cell(40, 4, _s("CLIENTE"), 0, 0, 'L')
+    pdf.set_font('Arial', 'B', 13)
+    pdf.set_text_color(WR, WG, WB)
+    pdf.set_xy(17, 57)
+    pdf.cell(180, 6, _s(cliente_label), 0, 0, 'L')
 
-    # ── Linha dourada separadora ───────────────────────────
-    pdf.set_fill_color(GOLD_R, GOLD_G, GOLD_B)
-    pdf.rect(0, 68, 210, 2, 'F')
+    # ── Linha dourada separadora full-width ─────────────
+    _line(0, 72, 210, 2.5, GR, GG, GB)
 
-    # ══ BLOCO FINANCEIRO — 3 colunas ═════════════════════
-    y_bloco = 76
-    w_col   = 62
-    gap     = 4
-    x_cols  = [12, 12 + w_col + gap, 12 + 2*(w_col + gap)]
+    # ════════════════════════════════════════════════════
+    #  BLOCO FINANCEIRO — 3 colunas × 2 linhas
+    # ════════════════════════════════════════════════════
+    y0   = 80
+    wc   = 62          # largura card
+    hc   = 28          # altura card
+    gap  = 2
+    xs   = [10, 10 + wc + gap, 10 + 2*(wc + gap)]
 
-    def card_financeiro(x, y, titulo, valor_str, cor_valor=(14,17,23), destaque=False):
-        if destaque:
-            pdf.set_fill_color(GOLD_R, GOLD_G, GOLD_B)
-            pdf.rect(x, y, w_col, 26, 'F')
-            pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
+    def card(x, y, label, valor, sub=None, gold=False):
+        if gold:
+            _line(x, y, wc, hc, GR, GG, GB)
+            lc = (WR, WG, WB)
+            vc = (WR, WG, WB)
+            sc = (230, 215, 170)
         else:
-            pdf.set_fill_color(LGRAY_R, LGRAY_G, LGRAY_B)
-            pdf.rect(x, y, w_col, 26, 'F')
-            pdf.set_text_color(90, 80, 50)
-        pdf.set_font('Arial', '', 8)
-        pdf.set_xy(x+2, y+3)
-        pdf.cell(w_col-4, 5, _s(titulo.upper()), 0, 1, 'C')
-        if destaque:
-            pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
-        else:
-            pdf.set_text_color(*cor_valor)
-        pdf.set_font('Arial', 'B', 14)
-        pdf.set_xy(x+2, y+10)
-        pdf.cell(w_col-4, 10, _s(valor_str), 0, 1, 'C')
+            _line(x, y, wc, hc, LR, LG, LB)
+            lc = (GR, GG, GB)
+            vc = (MR, MG, MB)
+            sc = (120, 110, 80)
+        # label
+        pdf.set_font('Arial', 'B', 7)
+        pdf.set_text_color(*lc)
+        pdf.set_xy(x + 3, y + 4)
+        pdf.cell(wc - 6, 4, _s(label), 0, 0, 'C')
+        # valor
+        pdf.set_font('Arial', 'B', 13)
+        pdf.set_text_color(*vc)
+        pdf.set_xy(x + 2, y + 10)
+        pdf.cell(wc - 4, 8, _s(valor), 0, 0, 'C')
+        # sub
+        if sub:
+            pdf.set_font('Arial', '', 7)
+            pdf.set_text_color(*sc)
+            pdf.set_xy(x + 2, y + 20)
+            pdf.cell(wc - 4, 4, _s(sub), 0, 0, 'C')
 
-    card_financeiro(x_cols[0], y_bloco, "CREDITO DA CARTA",
-                    fmt_brl(credito), destaque=True)
-    card_financeiro(x_cols[1], y_bloco, "ENTRADA (investimento)",
-                    fmt_brl(entrada), cor_valor=(14,17,23))
-    card_financeiro(x_cols[2], y_bloco, "TX DE TRANSFERENCIA",
-                    fmt_brl(tx_transf), cor_valor=(14,17,23))
+    card(xs[0], y0, "CREDITO DA CARTA",       fmt_brl(credito),
+         sub=f"{economia_pct:.0f}% de entrada", gold=True)
+    card(xs[1], y0, "ENTRADA  /  INVESTIMENTO", fmt_brl(entrada),
+         sub="Valor para transferencia")
+    card(xs[2], y0, "TX DE TRANSFERENCIA",     fmt_brl(tx_transf),
+         sub="Custo de formalizacao")
 
-    y_bloco2 = y_bloco + 32
-    card_financeiro(x_cols[0], y_bloco2, "SALDO DEVEDOR",
-                    fmt_brl(saldo_devedor), cor_valor=(14,17,23))
-    card_financeiro(x_cols[1], y_bloco2, "PARCELAS",
-                    f"{n_parcelas}x {fmt_brl(parcela)}", cor_valor=(14,17,23))
-    card_financeiro(x_cols[2], y_bloco2, "CUSTO TOTAL DA OPERACAO",
-                    fmt_brl(custo_total), destaque=True)
+    y1 = y0 + hc + gap
+    card(xs[0], y1, "SALDO DEVEDOR",           fmt_brl(saldo_devedor),
+         sub=f"{n_parcelas} parcelas restantes")
+    card(xs[1], y1, "PARCELA MENSAL",
+         f"{n_parcelas}x {fmt_brl(parcela)}",
+         sub="Valor fixo por mes")
+    card(xs[2], y1, "CUSTO TOTAL DA OPERACAO", fmt_brl(custo_total),
+         sub="Entrada + saldo + taxa", gold=True)
 
-    # ══ BLOCO CET ══════════════════════════════════════
-    y_cet = y_bloco2 + 33
-    pdf.set_fill_color(DARK_R, DARK_G, DARK_B)
-    pdf.rect(12, y_cet, 186, 28, 'F')
+    # ════════════════════════════════════════════════════
+    #  BLOCO CET — fundo escuro elegante
+    # ════════════════════════════════════════════════════
+    y_cet = y1 + hc + 6
+    _line(10, y_cet, 190, 30, DR, DG, DB)
+    _line(10, y_cet, 190, 1.5, GR, GG, GB)    # traço topo
 
-    pdf.set_text_color(GOLD_R, GOLD_G, GOLD_B)
-    pdf.set_font('Arial', 'B', 10)
-    pdf.set_xy(14, y_cet + 4)
-    pdf.cell(60, 6, _s("CET MENSAL (a.m.)"), 0, 0, 'L')
-    pdf.set_xy(80, y_cet + 4)
-    pdf.cell(60, 6, _s("CET TOTAL"), 0, 0, 'L')
-    pdf.set_xy(146, y_cet + 4)
-    pdf.cell(50, 6, _s("PRAZO"), 0, 0, 'L')
+    # 3 métricas lado a lado
+    metricas = [
+        ("CET MENSAL (a.m.)", fmt_pct(cet_mensal_pct)),
+        ("CET TOTAL",         fmt_pct(cet_total_pct)),
+        ("PRAZO",             f"{n_parcelas} meses"),
+    ]
+    for i, (lbl, val) in enumerate(metricas):
+        xm = 10 + i * 63 + 3
+        pdf.set_font('Arial', 'B', 7.5)
+        pdf.set_text_color(GR, GG, GB)
+        pdf.set_xy(xm, y_cet + 5)
+        pdf.cell(60, 4, _s(lbl), 0, 0, 'L')
+        pdf.set_font('Arial', 'B', 19)
+        pdf.set_text_color(WR, WG, WB)
+        pdf.set_xy(xm, y_cet + 11)
+        pdf.cell(60, 10, _s(val), 0, 0, 'L')
 
-    pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
-    pdf.set_font('Arial', 'B', 18)
-    pdf.set_xy(14, y_cet + 11)
-    pdf.cell(60, 10, _s(fmt_pct(cet_mensal_pct)), 0, 0, 'L')
-    pdf.set_xy(80, y_cet + 11)
-    pdf.cell(60, 10, _s(fmt_pct(cet_total_pct)), 0, 0, 'L')
-    pdf.set_font('Arial', 'B', 14)
-    pdf.set_xy(146, y_cet + 11)
-    pdf.cell(50, 10, _s(f"{n_parcelas} meses"), 0, 0, 'L')
+    # ════════════════════════════════════════════════════
+    #  COMO FUNCIONA — 3 passos refinados
+    # ════════════════════════════════════════════════════
+    y_how = y_cet + 36
+    _line(10, y_how, 190, 0.8, GR, GG, GB)
 
-    # ══ LINHA DOURADA ══════════════════════════════════
-    y_sep = y_cet + 33
-    pdf.set_fill_color(GOLD_R, GOLD_G, GOLD_B)
-    pdf.rect(12, y_sep, 186, 1, 'F')
-
-    # ══ COMO FUNCIONA — 3 passos ══════════════════════
-    y_steps = y_sep + 6
-    pdf.set_text_color(DARK_R, DARK_G, DARK_B)
-    pdf.set_font('Arial', 'B', 12)
-    pdf.set_xy(12, y_steps)
-    pdf.cell(186, 7, _s("COMO FUNCIONA"), 0, 1, 'L')
+    pdf.set_font('Arial', 'B', 9)
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(10, y_how + 4)
+    pdf.cell(190, 5, _s("COMO FUNCIONA — 3 PASSOS SIMPLES"), 0, 0, 'L')
 
     steps = [
-        ("1. VOCE INVESTE", f"Entrada de {fmt_brl(entrada)} para transferir a cota ja contemplada para seu nome."),
-        ("2. CREDITO LIBERADO", f"Credito de {fmt_brl(credito)} disponivel imediatamente para uso — imovel ou veiculo."),
-        ("3. PARCELAS NO PRAZO", f"{n_parcelas} parcelas de {fmt_brl(parcela)} ate o encerramento do grupo.")
+        ("01", "VOCE INVESTE A ENTRADA",
+         f"Voce aporta {fmt_brl(entrada)} — equivalente a {economia_pct:.0f}% do credito — "
+         f"para formalizar a transferencia da cota contemplada para o seu nome."),
+        ("02", "CREDITO LIBERADO IMEDIATAMENTE",
+         f"Com o credito de {fmt_brl(credito)} disponivel, voce utiliza diretamente para {uso_txt2}. "
+         f"Sem sorteio, sem fila — a contemplacao ja aconteceu."),
+        ("03", "PARCELAS ATE O ENCERRAMENTO DO GRUPO",
+         f"Voce paga {n_parcelas} parcelas mensais de {fmt_brl(parcela)} ate o encerramento do grupo. "
+         f"Os valores sao fixos, sem surpresas."),
     ]
-    y_steps += 9
-    for titulo_step, desc_step in steps:
-        pdf.set_fill_color(LGRAY_R, LGRAY_G, LGRAY_B)
-        pdf.rect(12, y_steps, 186, 16, 'F')
-        pdf.set_fill_color(GOLD_R, GOLD_G, GOLD_B)
-        pdf.rect(12, y_steps, 3, 16, 'F')
-        pdf.set_text_color(DARK_R, DARK_G, DARK_B)
-        pdf.set_font('Arial', 'B', 9)
-        pdf.set_xy(18, y_steps + 2)
-        pdf.cell(80, 5, _s(titulo_step), 0, 1, 'L')
-        pdf.set_font('Arial', '', 8)
-        pdf.set_text_color(60, 55, 40)
-        pdf.set_xy(18, y_steps + 8)
-        pdf.cell(178, 5, _s(desc_step), 0, 1, 'L')
-        y_steps += 19
+    y_s = y_how + 12
+    for num, titulo, desc in steps:
+        _line(10, y_s, 190, 18, LR, LG, LB)
+        _line(10, y_s, 4, 18, GR, GG, GB)       # barra lateral dourada
+        # número
+        pdf.set_font('Arial', 'B', 14)
+        pdf.set_text_color(GR, GG, GB)
+        pdf.set_xy(17, y_s + 2)
+        pdf.cell(12, 12, _s(num), 0, 0, 'C')
+        # título
+        pdf.set_font('Arial', 'B', 8.5)
+        pdf.set_text_color(DR, DG, DB)
+        pdf.set_xy(31, y_s + 3)
+        pdf.cell(166, 5, _s(titulo), 0, 0, 'L')
+        # descrição
+        pdf.set_font('Arial', '', 7.5)
+        pdf.set_text_color(MR, MG, MB)
+        pdf.set_xy(31, y_s + 9)
+        pdf.cell(166, 5, _s(desc), 0, 0, 'L')
+        y_s += 20
 
-    # ══ CTA BOX — fechamento ══════════════════════════
-    y_cta = y_steps + 4
-    pdf.set_fill_color(GREEN_R, GREEN_G, GREEN_B)
-    pdf.rect(12, y_cta, 186, 36, 'F')
+    # ════════════════════════════════════════════════════
+    #  CTA — fundo dourado escuro premium (sem verde)
+    # ════════════════════════════════════════════════════
+    y_cta = y_s + 3
+    _line(10, y_cta, 190, 38, 45, 39, 22)      # fundo dourado escuro rico
+    _line(10, y_cta, 190, 2,  GR, GG, GB)       # traço topo ouro
 
-    pdf.set_text_color(WHITE_R, WHITE_G, WHITE_B)
-    pdf.set_font('Arial', 'B', 14)
-    pdf.set_xy(14, y_cta + 4)
-    pdf.cell(182, 8, _s("ESTA COTA ESTA DISPONIVEL — VAGAS LIMITADAS"), 0, 1, 'C')
+    pdf.set_font('Arial', 'B', 13)
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(12, y_cta + 5)
+    pdf.cell(186, 7, _s("ESTA COTA ESTA DISPONIVEL — RESERVE AGORA"), 0, 0, 'C')
 
-    pdf.set_font('Arial', '', 9)
-    pdf.set_xy(14, y_cta + 13)
+    pdf.set_font('Arial', '', 8.5)
+    pdf.set_text_color(220, 210, 170)
+    pdf.set_xy(14, y_cta + 14)
     pdf.multi_cell(182, 5, _s(
-        "Cartas contempladas sao transferidas rapidamente. Voce ja tem o credito na mao — "
-        "sem sorteio, sem fila. Basta formalizar e o credito e seu.\n"
-        "Entre em contato agora e reserve esta oportunidade antes que outro cliente feche."
+        f"Cartas contempladas mudam de status rapidamente. {cliente_label}, voce ja tem o credito "
+        f"na mao, sem espera, sem sorteio.\n"
+        f"Basta formalizar a transferencia e o credito de {fmt_brl(credito)} e seu — para {uso_txt}."
     ), 0, 'C')
 
-    pdf.set_font('Arial', 'B', 11)
-    pdf.set_xy(14, y_cta + 28)
-    pdf.cell(182, 6, _s("Fale com nosso consultor: JBS Contempladas"), 0, 1, 'C')
+    pdf.set_font('Arial', 'B', 9.5)
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(12, y_cta + 30)
+    pdf.cell(186, 5, _s("Entre em contato agora com nosso consultor e garanta esta oportunidade."), 0, 0, 'C')
 
-    # ══ RODAPE ══════════════════════════════════════
-    pdf.set_fill_color(DARK_R, DARK_G, DARK_B)
-    pdf.rect(0, 280, 210, 17, 'F')
-    pdf.set_text_color(GOLD_R, GOLD_G, GOLD_B)
+    # ════════════════════════════════════════════════════
+    #  RODAPÉ — escuro com branding
+    # ════════════════════════════════════════════════════
+    _line(0, 279, 210, 18, DR, DG, DB)
+    _line(0, 279, 210, 1.2, GR, GG, GB)
+
     pdf.set_font('Arial', 'B', 8)
-    pdf.set_xy(12, 283)
-    pdf.cell(186, 5, _s("JBS CONTEMPLADAS  |  Inteligencia Comercial  |  Documento gerado automaticamente"), 0, 1, 'C')
-    pdf.set_text_color(130, 120, 80)
-    pdf.set_font('Arial', '', 7)
-    pdf.set_xy(12, 289)
-    pdf.cell(186, 4, _s("Valores sujeitos a confirmacao. Consulte disponibilidade com nossa equipe antes de qualquer decisao."), 0, 1, 'C')
+    pdf.set_text_color(GR, GG, GB)
+    pdf.set_xy(10, 281)
+    pdf.cell(190, 5,
+        _s("JBS CONTEMPLADAS  |  Inteligencia Comercial  |  Documento gerado automaticamente"),
+        0, 0, 'C')
+
+    pdf.set_font('Arial', '', 6.5)
+    pdf.set_text_color(100, 90, 60)
+    pdf.set_xy(10, 287)
+    pdf.cell(190, 4,
+        _s("Valores sujeitos a confirmacao. Consulte disponibilidade com nossa equipe antes de qualquer decisao financeira."),
+        0, 0, 'C')
 
     out = pdf.output(dest='S')
     if isinstance(out, (bytes, bytearray)):
